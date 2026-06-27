@@ -29,8 +29,10 @@ import {
 import {
   getLocalWater,
   getMineralAt,
+  normalizedCrowdAbove,
   normalizedDepth,
   normalizedHeight,
+  normalizedShadeLevel,
   plantWaterSupply,
 } from './environment'
 import {
@@ -276,6 +278,24 @@ function senseValue(
       if (occ === SEED_OCC || (occ > 0 && occ !== plant.id)) return 1
       return 0
     }
+    case 'SHADE':
+      return normalizedShadeLevel(occupancy, cell.x, cell.y)
+    case 'SHADE_DIR': {
+      const { dx, dy } = DIR_DELTA[dir]
+      const nx = cell.x + dx
+      const ny = cell.y + dy
+      if (!inBounds(nx, ny)) return 1
+      return normalizedShadeLevel(occupancy, nx, ny)
+    }
+    case 'MINERAL_DIR': {
+      const { dx, dy } = DIR_DELTA[dir]
+      const nx = cell.x + dx
+      const ny = cell.y + dy
+      if (!inBounds(nx, ny) || ny < WORLD.SOIL_Y) return 0
+      return Math.min(1, getMineralAt(minerals, nx, ny) / 20)
+    }
+    case 'CROWD_ABOVE':
+      return normalizedCrowdAbove(occupancy, plant.id, cell.x, cell.y)
   }
 }
 

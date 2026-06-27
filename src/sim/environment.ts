@@ -7,6 +7,7 @@ import {
   MINERAL_REGEN_RATE,
   MINERAL_SINK_RATE,
   MAX_SHADE_LAYERS,
+  CROWD_ABOVE_X_RADIUS,
   SHADE_PER_LAYER,
   SHADE_SCATTER_INTERVAL,
   SKY_LIGHT_RAMP,
@@ -106,6 +107,45 @@ export function shadeLayersAbove(
     }
   }
   return effectiveShadeLayers(layers, y, lastOccY)
+}
+
+/** Нормализованный уровень затенения 0..1 (с учётом рассеивания). */
+export function normalizedShadeLevel(
+  occupancy: (Int32Array | null)[],
+  x: number,
+  y: number,
+): number {
+  return Math.min(1, shadeLayersAbove(occupancy, x, y) / Math.max(1, MAX_SHADE_LAYERS))
+}
+
+/** Чужие растения (occ > 0, не своё) на строке y-1 в [x-radius .. x+radius]. */
+export function countForeignAbove(
+  occupancy: (Int32Array | null)[],
+  plantId: number,
+  x: number,
+  y: number,
+  radius = CROWD_ABOVE_X_RADIUS,
+): number {
+  const scanY = y - 1
+  if (scanY < 0) return 0
+  let count = 0
+  for (let dx = -radius; dx <= radius; dx++) {
+    const sx = x + dx
+    if (sx < 0 || sx >= WORLD.W) continue
+    const occ = occupancy[scanY]?.[sx] ?? 0
+    if (occ > 0 && occ !== plantId) count++
+  }
+  return count
+}
+
+export function normalizedCrowdAbove(
+  occupancy: (Int32Array | null)[],
+  plantId: number,
+  x: number,
+  y: number,
+): number {
+  const span = 2 * CROWD_ABOVE_X_RADIUS + 1
+  return countForeignAbove(occupancy, plantId, x, y) / span
 }
 
 export function normalizedHeight(y: number): number {

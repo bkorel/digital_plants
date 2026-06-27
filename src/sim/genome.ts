@@ -45,6 +45,14 @@ export const SENSORS = [
   'RANDOM',
   /** 1 — в клетке по текущему DIR чужое растение или семя; 0 — свободно или своя клетка */
   'FOREIGN',
+  /** Эффективный уровень затенения в текущей клетке (0 — светло, 1 — глубокая тень) */
+  'SHADE',
+  /** То же в соседней клетке по текущему DIR (куда растёт мерistema) */
+  'SHADE_DIR',
+  /** Минералы почвы в клетке по DIR (0 в воздухе) */
+  'MINERAL_DIR',
+  /** Доля чужих растений на 1 клетку выше в полосе ±CROWD_ABOVE_X_RADIUS по X */
+  'CROWD_ABOVE',
 ] as const
 export type SensorName = (typeof SENSORS)[number]
 export const SENSOR_COUNT = SENSORS.length

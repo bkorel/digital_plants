@@ -16,6 +16,8 @@ export const MAX_SHADE_LAYERS = 4
 export const SHADE_SCATTER_INTERVAL = 20
 /** Если над мерistemой (SPROUT в воздухе) больше N слоёв — отмирание по геному */
 export const SHADED_SPROUT_LAYERS = 5
+/** Радиус по X для сенсора CROWD_ABOVE (клетки чужих растений на 1 выше) */
+export const CROWD_ABOVE_X_RADIUS = 5
 export const BASE_LIGHT = 1.0
 export const WATER_PER_DEPTH = 0.25
 export const AIR_WATER = 0.05

@@ -30,7 +30,21 @@ npm run preview
 
 1. В [vite.config.ts](vite.config.ts) задан `base: './'` — относительные пути для статического хостинга.
 2. В репозитории: **Settings → Pages → Build and deployment → GitHub Actions**.
-3. При push в `main`/`master` workflow [.github/workflows/deploy-pages.yml](.github/workflows/deploy-pages.yml) собирает `dist/` и публикует сайт.
+3. После **merge PR в `main`** workflow [.github/workflows/deploy-pages.yml](.github/workflows/deploy-pages.yml) собирает `dist/` и публикует сайт.
+
+Прямой push в `main` не используется — только через Pull Request и code review.
+
+#### Защита ветки `main` (один раз в GitHub)
+
+**Settings → Branches → Add branch protection rule** для `main`:
+
+- **Require a pull request before merging** — включить
+- **Require approvals** — минимум 1
+- **Require status checks to pass** — включить, выбрать job **build** из workflow **CI**
+- **Do not allow bypassing the above settings** — включить (если доступно)
+- **Restrict who can push to matching branches** — опционально, только maintainers
+
+Перед merge PR должен пройти [.github/workflows/ci.yml](.github/workflows/ci.yml) (`npm ci` + `npm run build`).
 
 Локально: `npm run build`, затем содержимое `dist/` можно залить вручную (ветка `gh-pages` и т.п.).
 
