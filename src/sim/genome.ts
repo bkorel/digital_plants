@@ -188,6 +188,14 @@ export function cloneGenome(genome: Genome): Genome {
   return { code: Uint8Array.from(genome.code) }
 }
 
+export function genomesEqual(a: Genome, b: Genome): boolean {
+  if (a.code.length !== b.code.length) return false
+  for (let i = 0; i < a.code.length; i++) {
+    if (a.code[i] !== b.code[i]) return false
+  }
+  return true
+}
+
 // ── Сериализация: компактная hex-строка ──────────────────────────────────────
 
 export function serializeGenome(genome: Genome): string {

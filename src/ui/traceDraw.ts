@@ -1,4 +1,5 @@
-import { EVENT_COLORS, EVENT_LABELS, type PlantTickEvent } from '../sim/plantEvents'
+import { EVENT_COLORS, EVENT_LABELS, type PlantTickEvent, type ShootVisual } from '../sim/plantEvents'
+import { SHOOT_VISUAL_TTL } from '../sim/config'
 
 interface LabelRect {
   x: number
@@ -24,6 +25,8 @@ function drawArrow(
   ty: number,
   color: string,
   cellSize: number,
+  lineWidth = 2.2,
+  alpha = 0.95,
 ): void {
   const dx = tx - fx
   const dy = ty - fy
@@ -33,8 +36,8 @@ function drawArrow(
   const ey = len > 0.01 ? ty - (dy / len) * inset : ty
 
   ctx.strokeStyle = color
-  ctx.lineWidth = 2.2
-  ctx.globalAlpha = 0.95
+  ctx.lineWidth = lineWidth
+  ctx.globalAlpha = alpha
   ctx.beginPath()
   ctx.moveTo(fx, fy)
   ctx.lineTo(ex, ey)
@@ -120,6 +123,33 @@ function labelAnchorOnCell(
   return { x: cx, y: py }
 }
 
+const SHOOT_LINE_COLOR = '#ff3333'
+
+/** Красные линии выстрелов шипов (SHOOT). */
+export function drawShootLines(
+  ctx: CanvasRenderingContext2D,
+  lines: ShootVisual[],
+  cellSize: number,
+  tickCount: number,
+  selectedPlantId: number | null = null,
+): void {
+  for (const line of lines) {
+    const remaining = line.expireTick - tickCount
+    if (remaining <= 0) continue
+    const fade = Math.min(1, remaining / SHOOT_VISUAL_TTL)
+    const selected = selectedPlantId != null && line.plantId === selectedPlantId
+    const dimmed = selectedPlantId != null && !selected
+    const alpha = (dimmed ? 0.35 : 0.95) * (0.35 + fade * 0.65)
+    const width = selected ? 3.5 : dimmed ? 2 : 3
+
+    const fx = line.fromX * cellSize + cellSize / 2
+    const fy = line.fromY * cellSize + cellSize / 2
+    const tx = line.x * cellSize + cellSize / 2
+    const ty = line.y * cellSize + cellSize / 2
+    drawArrow(ctx, fx, fy, tx, ty, SHOOT_LINE_COLOR, cellSize, width, alpha)
+  }
+}
+
 export function drawPlantTraceEvents(
   ctx: CanvasRenderingContext2D,
   events: PlantTickEvent[],
@@ -165,7 +195,7 @@ export function drawPlantTraceEvents(
     const fy = ev.fromY * cellSize + cellSize / 2
     const tx = ev.x * cellSize + cellSize / 2
     const ty = ev.y * cellSize + cellSize / 2
-    drawArrow(ctx, fx, fy, tx, ty, color, cellSize)
+    drawArrow(ctx, fx, fy, tx, ty, color, cellSize, ev.kind === 'SHOOT' ? 3 : 2.2)
   }
 
   // 3) подписи с разведением

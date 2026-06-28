@@ -10,6 +10,9 @@ export type Direction =
   | 'DOWN_LEFT'
   | 'DOWN_RIGHT'
 
+import type { LineageSnapshot } from './lineage'
+export type { LineageOrigin, GenomeLineageNode, LineageSnapshot } from './lineage'
+
 /**
  * Геном — плоская линейная последовательность байт (кодонов). Любая
  * последовательность валидна: при исполнении каждый байт декодируется в
@@ -109,8 +112,13 @@ export interface WorldStats {
 
 export type ViewMode = 'PLANTS' | 'ENERGY' | 'FLOWS' | 'ANATOMY' | 'TRACE'
 
-/** Режим приложения: эволюция, лаборатория или исследование генома */
-export type AppMode = 'EVOLUTION' | 'LABORATORY' | 'GENOME_EXPLORER'
+/** Режим приложения: эволюция, лаборатория, исследование/сравнение генома, генеология */
+export type AppMode =
+  | 'EVOLUTION'
+  | 'LABORATORY'
+  | 'GENOME_EXPLORER'
+  | 'GENOME_COMPARE'
+  | 'GENEALOGY'
 
 export interface FallingSeed {
   x: number
@@ -143,4 +151,5 @@ export interface EvolutionSnapshot {
   nextPlantId: number
   nextCellId: number
   selectedPlantId: number | null
+  lineage: LineageSnapshot
 }

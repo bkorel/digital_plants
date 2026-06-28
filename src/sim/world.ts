@@ -1,4 +1,5 @@
-import { GERMINATION_CHANCE, GERMINATION_NEIGHBOR_BLOCK, INITIAL_PLANTS, MAX_GERMINATIONS_PER_TICK, MIN_PLANT_SPACING, MIN_SEED_ENERGY, MINERAL_ENERGY_FACTOR, SEED_FALL_DURATION_TICKS, SEED_GERMINATION_TICKS, SEED_MIN_PAYLOAD, SEED_SCATTER, SEED_SOIL_UPKEEP, WORLD } from './config'
+import { GERMINATION_CHANCE, GERMINATION_NEIGHBOR_BLOCK, INITIAL_PLANTS, MAX_GERMINATIONS_PER_TICK, MIN_PLANT_SPACING, MIN_SEED_ENERGY, MINERAL_ENERGY_FACTOR, SEED_FALL_DURATION_TICKS, SEED_GERMINATION_TICKS, SEED_MIN_PAYLOAD, SEED_SCATTER, SEED_SOIL_UPKEEP, SHOOT_VISUAL_TTL, WORLD } from './config'
+import { offsetX, wrapX, xDistance } from './coords'
 import {
   computeLightGridInto,
   depositMinerals,
@@ -27,10 +28,12 @@ import {
 } from './plant'
 import { applyWorldFoliageRules, clearPlantingColumn } from './foliage'
 import { Rng } from './rng'
+import type { LineageOrigin } from './lineage'
 import type { AppMode, EvolutionSnapshot, FallingSeed, Genome, Plant, SeedInSoil, WorldStats } from './types'
 import { estimateSpecies } from './genome'
+import { LineageRegistry } from './lineage'
 import { SEED_OCC, isCellFree } from './occupancy'
-import { emitPlantEvent, setPlantEventSink, type PlantTickEvent } from './plantEvents'
+import { emitPlantEvent, setPlantEventSink, type PlantTickEvent, type ShootVisual } from './plantEvents'
 
 function clonePlant(plant: Plant): Plant {
   return {
@@ -71,9 +74,12 @@ export class World {
   tracePlantId: number | null = null
   /** События последнего тика (для режима трассировки) */
   tickEvents: PlantTickEvent[] = []
+  /** Недавние выстрелы шипов — для красных линий в режимах «Растения» / «Ткани» */
+  recentShoots: ShootVisual[] = []
   /** Переиспользуемые буферы для diffuseMinerals (без аллокаций каждый тик) */
   private readonly mineralScratchNext: Float32Array
   private readonly mineralScratchLateral: Float32Array
+  readonly lineage = new LineageRegistry()
 
   constructor(seed = 42) {
     this.rng = new Rng(seed)
@@ -131,8 +137,7 @@ export class World {
     for (let dx = -maxScatter; dx <= maxScatter; dx++) offsets.push(dx)
     const start = this.rng.nextInt(0, offsets.length - 1)
     for (let i = 0; i < offsets.length; i++) {
-      const x = originX + offsets[(start + i) % offsets.length]
-      if (x < 0 || x >= WORLD.W) continue
+      const x = offsetX(originX, offsets[(start + i) % offsets.length])
       if (isCellFree(this.occupancy, x, y)) return { x, y }
     }
     return null
@@ -213,15 +218,28 @@ export class World {
     this.fallingSeeds = stillFalling
   }
 
+  private registerPlantLineage(
+    plant: Plant,
+    origin: LineageOrigin,
+    parentGenome?: Genome,
+  ): void {
+    this.lineage.registerPlant({
+      genome: plant.genome,
+      tick: this.tickCount,
+      origin,
+      parentGenome,
+    })
+  }
+
   seedInitialPlants(count: number, randomGenomes = false): void {
     const usedX = new Set<number>()
     for (let i = 0; i < count; i++) {
-      let x = this.rng.nextInt(2, WORLD.W - 3)
+      let x = this.rng.nextInt(0, WORLD.W - 1)
       let attempts = 0
       while (attempts < 80) {
-        const tooClose = [...usedX].some((ux) => Math.abs(ux - x) < MIN_PLANT_SPACING)
+        const tooClose = [...usedX].some((ux) => xDistance(ux, x) < MIN_PLANT_SPACING)
         if (!tooClose) break
-        x = this.rng.nextInt(2, WORLD.W - 3)
+        x = this.rng.nextInt(0, WORLD.W - 1)
         attempts++
       }
       usedX.add(x)
@@ -229,6 +247,7 @@ export class World {
       const genome = randomGenomes ? fullyRandomGenome(this.rng) : randomGenome(this.rng)
       const plant = createPlant(genome, x, y, genomeHue(genome), 12, this.rng.nextInt(0, 15))
       this.plants.push(plant)
+      this.registerPlantLineage(plant, 'initial')
       this.occupancy[y][x] = plant.id
     }
   }
@@ -253,7 +272,7 @@ export class World {
   spawnFromGenome(genomeJson: string, x?: number, _y?: number): boolean {
     try {
       const genome = deserializeGenome(genomeJson)
-      return this.plantGenomeAt(genome, x ?? this.rng.nextInt(2, WORLD.W - 3), false) != null
+      return this.plantGenomeAt(genome, x ?? this.rng.nextInt(0, WORLD.W - 1), false) != null
     } catch {
       return false
     }
@@ -261,7 +280,7 @@ export class World {
 
   /** Клетки в колонке посадки, которые будут сняты (превью). plantId=0 — семя в почве. */
   plantingColumnBlockers(columnX: number): { x: number; y: number; plantId: number }[] {
-    const gx = Math.max(0, Math.min(WORLD.W - 1, Math.floor(columnX)))
+    const gx = wrapX(Math.floor(columnX))
     const blockers: { x: number; y: number; plantId: number }[] = []
     for (let y = 0; y < WORLD.H; y++) {
       const occ = this.occupancy[y][gx]
@@ -305,7 +324,7 @@ export class World {
    * клетки других растений в этой колонке — соседи не трогаются.
    */
   plantGenomeAt(genome: Genome, x: number, laboratory = false): Plant | null {
-    const gx = Math.max(0, Math.min(WORLD.W - 1, Math.floor(x)))
+    const gx = wrapX(Math.floor(x))
     const gy = WORLD.SOIL_Y
 
     if (laboratory) {
@@ -325,10 +344,32 @@ export class World {
     const spawnY = this.occupancy[gy][gx] === 0 ? gy : this.findSpawnY(gx)
     const plant = createPlant(genome, gx, spawnY, genomeHue(genome), 12)
     this.plants.push(plant)
+    this.registerPlantLineage(plant, laboratory ? 'laboratory' : 'manual')
     this.occupancy[spawnY][gx] = plant.id
     this.selectedPlantId = plant.id
     this.rebuildLight()
+    this.syncLineage()
     return plant
+  }
+
+  /** Синхронизировать генеалогию с живыми растениями и обрезать мёртвые ветви. */
+  syncLineage(): void {
+    for (const p of this.plants) {
+      if (p.dead) continue
+      this.lineage.ensureGenome(p.genome, this.tickCount, { origin: 'germination' })
+    }
+    for (const s of this.seeds) {
+      this.lineage.ensureGenome(s.genome, this.tickCount, { origin: 'germination' })
+    }
+    for (const s of this.fallingSeeds) {
+      this.lineage.ensureGenome(s.genome, this.tickCount, { origin: 'germination' })
+    }
+    this.lineage.syncAndPrune({
+      plants: this.plants,
+      seeds: this.seeds,
+      fallingSeeds: this.fallingSeeds,
+      tick: this.tickCount,
+    })
   }
 
   /** Убрать живое растение с поля без смерти (для лаборатории). */
@@ -341,6 +382,7 @@ export class World {
     this.plants = this.plants.filter((p) => p.id !== plantId)
     if (this.selectedPlantId === plantId) this.selectedPlantId = null
     this.rebuildLight()
+    this.syncLineage()
     return plant
   }
 
@@ -358,14 +400,31 @@ export class World {
     return uptakeByCell
   }
 
+  private pruneRecentShoots(): void {
+    const now = this.tickCount
+    if (this.recentShoots.length === 0) return
+    this.recentShoots = this.recentShoots.filter((s) => s.expireTick > now)
+  }
+
   tick(): void {
+    this.pruneRecentShoots()
     this.tickEvents = []
     const traceId = this.tracePlantId
-    if (traceId != null) {
-      setPlantEventSink((e) => {
-        if (e.plantId === traceId) this.tickEvents.push(e)
-      })
-    }
+    setPlantEventSink((e) => {
+      if (e.kind === 'SHOOT' && e.fromX != null && e.fromY != null) {
+        this.recentShoots.push({
+          plantId: e.plantId,
+          fromX: e.fromX,
+          fromY: e.fromY,
+          x: e.x,
+          y: e.y,
+          expireTick: this.tickCount + SHOOT_VISUAL_TTL,
+        })
+      }
+      if (traceId != null && e.plantId === traceId) {
+        this.tickEvents.push(e)
+      }
+    })
     try {
       this.tickCount++
     this.processFallingSeeds()
@@ -428,6 +487,8 @@ export class World {
 
     this.plants = this.plants.filter((p) => !p.dead)
 
+    this.syncLineage()
+
     diffuseMinerals(this.minerals, {
       next: this.mineralScratchNext,
       lateral: this.mineralScratchLateral,
@@ -447,8 +508,8 @@ export class World {
       }
       for (const px of surfaceColumns) {
         for (let d = 1; d <= GERMINATION_NEIGHBOR_BLOCK; d++) {
-          if (px - d >= 0) blocked.add(px - d)
-          if (px + d < WORLD.W) blocked.add(px + d)
+          blocked.add(offsetX(px, -d))
+          blocked.add(offsetX(px, d))
         }
       }
     }
@@ -465,7 +526,7 @@ export class World {
 
   private isTooCloseForGermination(x: number, surfaceColumns: Set<number>): boolean {
     for (const sx of surfaceColumns) {
-      if (Math.abs(sx - x) < MIN_PLANT_SPACING) return true
+      if (xDistance(sx, x) < MIN_PLANT_SPACING) return true
     }
     return false
   }
@@ -512,6 +573,7 @@ export class World {
           this.rng.nextInt(0, 10),
         )
         this.plants.push(plant)
+        this.registerPlantLineage(plant, 'germination', seed.genome)
         this.occupancy[spawnY][seed.x] = plant.id
         surfaceColumns.add(seed.x)
         germinated++
@@ -527,8 +589,8 @@ export class World {
         }
 
         for (let d = 1; d <= GERMINATION_NEIGHBOR_BLOCK; d++) {
-          if (seed.x - d >= 0) blocked.add(seed.x - d)
-          if (seed.x + d < WORLD.W) blocked.add(seed.x + d)
+          blocked.add(offsetX(seed.x, -d))
+          blocked.add(offsetX(seed.x, d))
         }
         continue
       }
@@ -549,6 +611,7 @@ export class World {
   /** Сохранить текущее состояние эволюции (перед входом в лабораторию). */
   captureEvolution(): EvolutionSnapshot | null {
     if (this.mode !== 'EVOLUTION') return null
+    this.syncLineage()
     const ids = getIdCounters()
     return {
       tickCount: this.tickCount,
@@ -561,6 +624,7 @@ export class World {
       nextPlantId: ids.nextPlantId,
       nextCellId: ids.nextCellId,
       selectedPlantId: this.selectedPlantId,
+      lineage: this.lineage.capture(),
     }
   }
 
@@ -576,6 +640,8 @@ export class World {
     this.rng.setState(snapshot.rngState)
     setIdCounters(snapshot.nextPlantId, snapshot.nextCellId)
     this.selectedPlantId = snapshot.selectedPlantId
+    this.lineage.restore(snapshot.lineage)
+    this.syncLineage()
     this.resyncOccupancy()
   }
 
@@ -590,11 +656,14 @@ export class World {
     this.seeds = []
     this.fallingSeeds = []
     this.selectedPlantId = null
+    this.recentShoots = []
     this.minerals = initMinerals()
     this.occupancy = Array.from({ length: WORLD.H }, () => new Int32Array(WORLD.W))
     resetIdCounters()
+    this.lineage.clear()
     this.seedInitialPlants(INITIAL_PLANTS, randomGenomes)
     this.resyncOccupancy()
+    this.syncLineage()
   }
 
   /** Пустой мир с одним экземпляром из коллекции (без прорастания семян). */
@@ -605,6 +674,7 @@ export class World {
     this.seeds = []
     this.fallingSeeds = []
     this.selectedPlantId = null
+    this.recentShoots = []
     this.minerals = initMinerals()
     this.occupancy = Array.from({ length: WORLD.H }, () => new Int32Array(WORLD.W))
     resetIdCounters()
@@ -613,9 +683,11 @@ export class World {
     const y = WORLD.SOIL_Y
     const plant = createPlant(genome, x, y, genomeHue(genome), 12)
     this.plants.push(plant)
+    this.registerPlantLineage(plant, 'laboratory')
     this.occupancy[y][x] = plant.id
     this.selectedPlantId = plant.id
     this.resyncOccupancy()
+    this.syncLineage()
     return plant
   }
 
@@ -627,6 +699,7 @@ export class World {
     this.seeds = []
     this.fallingSeeds = []
     this.selectedPlantId = null
+    this.recentShoots = []
     this.minerals = initMinerals()
     this.occupancy = Array.from({ length: WORLD.H }, () => new Int32Array(WORLD.W))
     resetIdCounters()

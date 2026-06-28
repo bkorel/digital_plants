@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { recordDraw } from '../dev/perfProbe'
 import { SEED_FALL_DURATION_MS, SEED_FALL_DURATION_TICKS, WORLD } from '../sim/config'
+import { wrapX } from '../sim/coords'
 import type { AppMode, CellType } from '../sim/types'
 import type { ViewMode } from '../sim/types'
 import type { World } from '../sim/world'
-import { drawPlantTraceEvents } from './traceDraw'
+import { drawPlantTraceEvents, drawShootLines } from './traceDraw'
 import PlantInspectOverlay from './PlantInspectOverlay'
 import {
   blitPixelGrid,
@@ -25,11 +26,16 @@ interface Props {
   onSelectPlant: (plantId: number | null) => void
   onTakeToLaboratory: (plantId: number) => void
   onExploreGenome?: (plantId: number) => void
+  onCompareGenomes?: (plantId: number) => void
   plantPlacementActive?: boolean
   plantPreviewX?: number
   onPlantPreviewMove?: (x: number) => void
   onPlantConfirm?: (x: number) => void
   onPlantCancel?: () => void
+  highlightPlantIds?: number[]
+  comparePickActive?: boolean
+  comparePickHint?: string
+  onCancelComparePick?: () => void
 }
 
 function hsl(h: number, s: number, l: number): string {
@@ -118,11 +124,15 @@ export default function WorldCanvas({
   onSelectPlant,
   onTakeToLaboratory,
   onExploreGenome,
+  onCompareGenomes,
   plantPlacementActive = false,
   plantPreviewX = Math.floor(WORLD.W / 2),
   onPlantPreviewMove,
   onPlantConfirm,
   onPlantCancel,
+  comparePickActive = false,
+  comparePickHint,
+  onCancelComparePick,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -140,10 +150,19 @@ export default function WorldCanvas({
     if (!canvas) return null
     const rect = canvas.getBoundingClientRect()
     if (rect.width <= 0 || rect.height <= 0) return null
-    const x = Math.max(0, Math.min(WORLD.W - 1, Math.floor(((clientX - rect.left) / rect.width) * WORLD.W)))
+    const x = wrapX(Math.floor(((clientX - rect.left) / rect.width) * WORLD.W))
     const y = Math.max(0, Math.min(WORLD.H - 1, Math.floor(((clientY - rect.top) / rect.height) * WORLD.H)))
     return { x, y }
   }
+
+  useEffect(() => {
+    if (!comparePickActive) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onCancelComparePick?.()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [comparePickActive, onCancelComparePick])
 
   useEffect(() => {
     if (!plantPlacementActive) return
@@ -282,6 +301,10 @@ export default function WorldCanvas({
         ctx.fillStyle = 'rgba(184, 224, 176, 0.06)'
         ctx.fillRect(bx, by, bw, bh)
       }
+    }
+
+    if (viewMode === 'PLANTS' || viewMode === 'ANATOMY') {
+      drawShootLines(ctx, world.recentShoots, cellSize, world.tickCount, selectedPlantId)
     }
 
     if (viewMode === 'FLOWS') {
@@ -434,8 +457,16 @@ export default function WorldCanvas({
   return (
     <div
       ref={wrapRef}
-      className={`canvas-wrap${selectedPlantId != null ? ' canvas-wrap--selected' : ''}${plantPlacementActive ? ' canvas-wrap--planting' : ''}`}
+      className={`canvas-wrap${selectedPlantId != null ? ' canvas-wrap--selected' : ''}${plantPlacementActive ? ' canvas-wrap--planting' : ''}${comparePickActive ? ' canvas-wrap--compare-pick' : ''}`}
     >
+      {comparePickActive && comparePickHint && (
+        <div className="compare-pick-bar">
+          {comparePickHint}
+          <button type="button" onClick={() => onCancelComparePick?.()}>
+            Отмена
+          </button>
+        </div>
+      )}
       {plantPlacementActive && (
         <div className="plant-placement-bar">
           Укажите колонку посадки · красным — клетки, которые будут сняты · клик — посадить · Esc — отмена
@@ -448,6 +479,9 @@ export default function WorldCanvas({
           onTakeToLaboratory={() => onTakeToLaboratory(selectedPlant.id)}
           onExploreGenome={
             onExploreGenome ? () => onExploreGenome(selectedPlant.id) : undefined
+          }
+          onCompareGenomes={
+            comparePickActive ? undefined : () => onCompareGenomes?.(selectedPlant.id)
           }
         />
       )}

@@ -26,6 +26,8 @@ interface Props {
   onPlantFromCollection: (genome: Genome) => void
   onPlantFromPaste: (json: string) => void
   onExploreGenome?: () => void
+  onCompareGenomes?: () => void
+  comparePickActive?: boolean
 }
 
 export default function GenomePanel({
@@ -37,6 +39,8 @@ export default function GenomePanel({
   onPlantFromCollection,
   onPlantFromPaste,
   onExploreGenome,
+  onCompareGenomes,
+  comparePickActive,
 }: Props) {
   const [pasteText, setPasteText] = useState('')
   const [saveName, setSaveName] = useState('')
@@ -98,6 +102,11 @@ export default function GenomePanel({
             ? 'Выберите образец в панели лаборатории, введите геном вручную или кликните по растению.'
             : 'Кликните по растению на поле, чтобы посмотреть геном.'}
         </p>
+        {appMode === 'EVOLUTION' && onCompareGenomes && !comparePickActive && (
+          <button type="button" className="btn-compare" onClick={onCompareGenomes} style={{ marginTop: 8 }}>
+            Сравнить геномы
+          </button>
+        )}
         {(appMode === 'EVOLUTION' || appMode === 'LABORATORY') && (
           <>
             <h3>{appMode === 'LABORATORY' ? 'Подсадить геном' : 'Подсадить геном'}</h3>
@@ -151,6 +160,11 @@ export default function GenomePanel({
         {onExploreGenome && (
           <button type="button" className="btn-explore" onClick={onExploreGenome}>
             Исследовать геном
+          </button>
+        )}
+        {onCompareGenomes && !comparePickActive && (
+          <button type="button" className="btn-compare" onClick={onCompareGenomes}>
+            Сравнить геномы
           </button>
         )}
         <input

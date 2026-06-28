@@ -7,10 +7,13 @@ import {
   recordWorldMeta,
   startPerfProbe,
 } from '../dev/perfProbe'
-import type { AppMode, EvolutionSnapshot, Genome, SavedGenome, ViewMode } from '../sim/types'
+import type { AppMode, EvolutionSnapshot, Genome, GenomeLineageNode, SavedGenome, ViewMode } from '../sim/types'
+import { genomeKey } from '../sim/lineage'
 import { World } from '../sim/world'
 import { isWorkerSimulationAvailable, WorldWorkerHost } from '../sim/worldWorkerHost'
 import Controls from './Controls'
+import GenealogyScreen from './GenealogyScreen'
+import GenomeCompareScreen from './GenomeCompareScreen'
 import GenomeExplorerScreen from './GenomeExplorerScreen'
 import GenomePanel from './GenomePanel'
 import LaboratoryPanel from './LaboratoryPanel'
@@ -21,6 +24,38 @@ import WorldCanvas from './WorldCanvas'
 import WorldRulesPanel from './WorldRulesPanel'
 
 const COLLECTION_KEY = 'digital-plants-collection'
+
+const FULLSCREEN_MODES: AppMode[] = ['GENOME_EXPLORER', 'GENOME_COMPARE', 'GENEALOGY']
+
+function isFullscreenMode(mode: AppMode): boolean {
+  return FULLSCREEN_MODES.includes(mode)
+}
+
+function resolveGenomeByKey(
+  world: World,
+  key: string,
+): { genome: Genome; node?: GenomeLineageNode } | null {
+  const node = world.lineage.get(key)
+  if (node) return { genome: node.genome, node }
+  for (const p of world.plants) {
+    if (!p.dead && genomeKey(p.genome) === key) {
+      return { genome: p.genome }
+    }
+  }
+  for (const s of world.seeds) {
+    if (genomeKey(s.genome) === key) return { genome: s.genome }
+  }
+  for (const s of world.fallingSeeds) {
+    if (genomeKey(s.genome) === key) return { genome: s.genome }
+  }
+  return null
+}
+
+function genomeKeyFromPlant(world: World, plantId: number): string | null {
+  const plant = world.plants.find((p) => p.id === plantId && !p.dead)
+  if (!plant) return null
+  return genomeKey(plant.genome)
+}
 
 interface StoredGenome {
   id: string
@@ -99,6 +134,8 @@ export default function App() {
   const [plantPreviewX, setPlantPreviewX] = useState(Math.floor(WORLD.W / 2))
   const [selectedPlantId, setSelectedPlantId] = useState<number | null>(null)
   const [explorerReturnMode, setExplorerReturnMode] = useState<AppMode>('EVOLUTION')
+  const [comparePick, setComparePick] = useState<number | null>(null)
+  const [comparePair, setComparePair] = useState<{ a: string; b: string } | null>(null)
   const [autoRandomRestartOnExtinction, setAutoRandomRestartOnExtinction] = useState(false)
   const autoRandomRestartRef = useRef(false)
   const speedAccumRef = useRef(0)
@@ -221,10 +258,11 @@ export default function App() {
   useEffect(() => {
     const w = worldRef.current
     if (!w) return
-    const traceId =
-      viewMode === 'TRACE' && selectedPlantId != null ? selectedPlantId : null
+    const traceId = selectedPlantId
     w.tracePlantId = traceId
-    workerHostRef.current?.setTracePlant(traceId)
+    workerHostRef.current?.setTracePlant(
+      viewMode === 'TRACE' && selectedPlantId != null ? selectedPlantId : null,
+    )
   }, [viewMode, selectedPlantId])
 
   useEffect(() => {
@@ -235,7 +273,7 @@ export default function App() {
       const host = workerHostRef.current
       const useWorker = useWorkerSimRef.current && host != null
 
-      if (w && !paused && appMode !== 'GENOME_EXPLORER') {
+      if (w && !paused && !isFullscreenMode(appMode)) {
         const traceId =
           viewMode === 'TRACE' && selectedPlantId != null ? selectedPlantId : null
 
@@ -338,6 +376,10 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && comparePick != null) {
+        setComparePick(null)
+        return
+      }
       if (e.code !== 'Space' && e.key !== ' ') return
       if (e.repeat) return
       const el = e.target as HTMLElement
@@ -354,7 +396,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [handleStep])
+  }, [handleStep, comparePick])
 
   const handleRestart = () => {
     if (appMode === 'LABORATORY' && labSpecimen) {
@@ -382,11 +424,63 @@ export default function App() {
   }
 
   const handleSelectPlant = (plantId: number | null) => {
+    if (comparePick === -1 && plantId != null) {
+      setComparePick(plantId)
+      setSelectedPlantId(plantId)
+      refresh()
+      return
+    }
+    if (comparePick != null && comparePick > 0 && plantId != null && plantId !== comparePick) {
+      const keyA = genomeKeyFromPlant(worldRef.current!, comparePick)
+      const keyB = genomeKeyFromPlant(worldRef.current!, plantId)
+      if (keyA && keyB) handleEnterGenomeCompareKeys(keyA, keyB)
+      return
+    }
     setSelectedPlantId(plantId)
     if (plantId != null) {
       setViewMode('TRACE')
       setPaused(true)
     }
+    refresh()
+  }
+
+  const handleExitFullscreenMode = () => {
+    setAppMode(explorerReturnMode === 'LABORATORY' ? 'LABORATORY' : 'EVOLUTION')
+    setComparePair(null)
+    setComparePick(null)
+    refresh()
+  }
+
+  const handleEnterGenomeCompareKeys = (keyA: string, keyB: string) => {
+    if (!isFullscreenMode(appMode) && appMode !== 'GENEALOGY') {
+      setExplorerReturnMode(appMode === 'LABORATORY' ? 'LABORATORY' : 'EVOLUTION')
+    }
+    setComparePair({ a: keyA, b: keyB })
+    setComparePick(null)
+    setAppMode('GENOME_COMPARE')
+    setPaused(true)
+    refresh()
+  }
+
+  const handleStartComparePick = (plantId?: number | null) => {
+    setPaused(true)
+    if (plantId != null) {
+      setComparePick(plantId)
+      setSelectedPlantId(plantId)
+    } else {
+      setComparePick(-1)
+      setSelectedPlantId(null)
+    }
+    refresh()
+  }
+
+  const handleEnterGenealogy = () => {
+    worldRef.current?.syncLineage()
+    if (!isFullscreenMode(appMode)) {
+      setExplorerReturnMode(appMode === 'LABORATORY' ? 'LABORATORY' : 'EVOLUTION')
+    }
+    setAppMode('GENEALOGY')
+    setPaused(true)
     refresh()
   }
 
@@ -520,8 +614,7 @@ export default function App() {
   }
 
   const handleExitGenomeExplorer = () => {
-    setAppMode(explorerReturnMode === 'LABORATORY' ? 'LABORATORY' : 'EVOLUTION')
-    refresh()
+    handleExitFullscreenMode()
   }
 
   const handleEnterGenomeExplorer = (plantId?: number | null) => {
@@ -591,10 +684,32 @@ export default function App() {
       ? world.plants.find((p) => p.id === selectedPlantId && !p.dead)
       : undefined
 
+  const compareResolved =
+    comparePair != null
+      ? (() => {
+          const a = resolveGenomeByKey(world, comparePair.a)
+          const b = resolveGenomeByKey(world, comparePair.b)
+          if (!a || !b) return null
+          return {
+            keyA: comparePair.a,
+            keyB: comparePair.b,
+            genomeA: a.genome,
+            genomeB: b.genome,
+            nodeA: a.node,
+            nodeB: b.node,
+          }
+        })()
+      : null
+
+  const appClass =
+    appMode === 'LABORATORY'
+      ? ' app--laboratory'
+      : isFullscreenMode(appMode)
+        ? ' app--genome-explorer'
+        : ''
+
   return (
-    <div
-      className={`app${appMode === 'LABORATORY' ? ' app--laboratory' : ''}${appMode === 'GENOME_EXPLORER' ? ' app--genome-explorer' : ''}`}
-    >
+    <div className={`app${appClass}`}>
       <header className="app-header">
         <h1>Digital Plants Evolution</h1>
         <div className="app-mode-switch">
@@ -602,7 +717,7 @@ export default function App() {
             type="button"
             className={appMode === 'EVOLUTION' ? 'active' : ''}
             onClick={() => {
-              if (appMode === 'GENOME_EXPLORER') handleExitGenomeExplorer()
+              if (isFullscreenMode(appMode)) handleExitFullscreenMode()
               else if (appMode === 'LABORATORY') handleExitLaboratory()
             }}
           >
@@ -612,7 +727,7 @@ export default function App() {
             type="button"
             className={appMode === 'LABORATORY' ? 'active' : ''}
             onClick={() => {
-              if (appMode === 'GENOME_EXPLORER') handleExitGenomeExplorer()
+              if (isFullscreenMode(appMode)) handleExitFullscreenMode()
               if (appMode !== 'LABORATORY') enterLaboratory()
             }}
           >
@@ -624,6 +739,13 @@ export default function App() {
             onClick={() => handleEnterGenomeExplorer(selectedPlantId)}
           >
             Исследование генома
+          </button>
+          <button
+            type="button"
+            className={appMode === 'GENEALOGY' ? 'active' : ''}
+            onClick={handleEnterGenealogy}
+          >
+            Генеология
           </button>
         </div>
       </header>
@@ -639,6 +761,36 @@ export default function App() {
             refresh()
           }}
         />
+      ) : appMode === 'GENOME_COMPARE' ? (
+        compareResolved ? (
+        <GenomeCompareScreen
+          keyA={compareResolved.keyA}
+          keyB={compareResolved.keyB}
+          genomeA={compareResolved.genomeA}
+          genomeB={compareResolved.genomeB}
+          nodeA={compareResolved.nodeA}
+          nodeB={compareResolved.nodeB}
+          lineage={world.lineage}
+          onBack={handleExitFullscreenMode}
+          onSwap={() =>
+            setComparePair((p) => (p ? { a: p.b, b: p.a } : null))
+          }
+        />
+        ) : (
+          <div className="genome-explorer genome-explorer--empty">
+            <p className="genome-explorer__empty-msg">Не удалось найти геномы для сравнения.</p>
+            <button type="button" onClick={handleExitFullscreenMode}>
+              ← Назад
+            </button>
+          </div>
+        )
+      ) : appMode === 'GENEALOGY' ? (
+        <GenealogyScreen
+          world={world}
+          frame={renderTick}
+          onBack={handleExitFullscreenMode}
+          onCompare={handleEnterGenomeCompareKeys}
+        />
       ) : (
         <>
       <div className="world-column">
@@ -652,10 +804,23 @@ export default function App() {
           onSelectPlant={handleSelectPlant}
           onTakeToLaboratory={handleTakeToLaboratory}
           onExploreGenome={handleEnterGenomeExplorer}
+          onCompareGenomes={(id) => handleStartComparePick(id)}
           plantPlacementActive={plantPlacement != null}
           plantPreviewX={plantPreviewX}
           onPlantPreviewMove={setPlantPreviewX}
           onPlantConfirm={confirmPlantPlacement}
+          highlightPlantIds={
+            comparePick != null && comparePick > 0 ? [comparePick] : undefined
+          }
+          comparePickActive={comparePick != null}
+          comparePickHint={
+            comparePick === -1
+              ? 'Выберите первое растение для сравнения'
+              : comparePick != null && comparePick > 0
+                ? `Выберите второе растение (первое: #${comparePick})`
+                : undefined
+          }
+          onCancelComparePick={() => setComparePick(null)}
           onPlantCancel={cancelPlantPlacement}
         />
         <SimulationBar
@@ -712,6 +877,8 @@ export default function App() {
           onPlantFromCollection={handlePlantGenome}
           onPlantFromPaste={handlePlantPaste}
           onExploreGenome={() => handleEnterGenomeExplorer(selectedPlantId)}
+          onCompareGenomes={() => handleStartComparePick(selectedPlantId)}
+          comparePickActive={comparePick != null}
         />
       </aside>
         </>

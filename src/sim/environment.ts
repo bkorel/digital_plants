@@ -17,6 +17,7 @@ import {
   WATER_PER_DEPTH,
   WORLD,
 } from './config'
+import { offsetX } from './coords'
 import type { Plant, PlantCell } from './types'
 
 export function isSoil(y: number): boolean {
@@ -130,8 +131,7 @@ export function countForeignAbove(
   if (scanY < 0) return 0
   let count = 0
   for (let dx = -radius; dx <= radius; dx++) {
-    const sx = x + dx
-    if (sx < 0 || sx >= WORLD.W) continue
+    const sx = offsetX(x, dx)
     const occ = occupancy[scanY]?.[sx] ?? 0
     if (occ > 0 && occ !== plantId) count++
   }
@@ -259,8 +259,8 @@ export function diffuseMinerals(
   for (let y = WORLD.SOIL_Y; y < WORLD.H; y++) {
     for (let x = 0; x < WORLD.W; x++) {
       const idx = mineralIndex(x, y)
-      const left = x > 0 ? next[mineralIndex(x - 1, y)] : next[idx]
-      const right = x < WORLD.W - 1 ? next[mineralIndex(x + 1, y)] : next[idx]
+      const left = next[mineralIndex(offsetX(x, -1), y)]
+      const right = next[mineralIndex(offsetX(x, 1), y)]
       lateral[idx] = MINERAL_DIFFUSE_RATE * ((left + right) / 2 - next[idx])
     }
   }
