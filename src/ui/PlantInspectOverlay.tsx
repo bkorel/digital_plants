@@ -6,6 +6,7 @@ interface Props {
   showTakeButton: boolean
   onTakeToLaboratory: () => void
   onExploreGenome?: () => void
+  onCompareGenomes?: () => void
 }
 
 function fmt(n: number, digits = 1): string {
@@ -17,6 +18,7 @@ export default function PlantInspectOverlay({
   showTakeButton,
   onTakeToLaboratory,
   onExploreGenome,
+  onCompareGenomes,
 }: Props) {
   const s = computePlantInspectStats(plant)
 
@@ -53,6 +55,11 @@ export default function PlantInspectOverlay({
         {onExploreGenome && (
           <button type="button" className="plant-inspect__explore-btn" onClick={onExploreGenome}>
             Исследовать геном
+          </button>
+        )}
+        {onCompareGenomes && (
+          <button type="button" className="plant-inspect__compare-btn" onClick={onCompareGenomes}>
+            Сравнить геномы
           </button>
         )}
         {showTakeButton && (

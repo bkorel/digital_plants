@@ -5,6 +5,7 @@ import {
   SPIKE_STEM_DRAIN,
   WORLD,
 } from './config'
+import { isYInBounds, offsetX, xDistance } from './coords'
 import { shadeLayersAbove } from './environment'
 import { genomeShadeSenescence } from './genome'
 import { findLandingY } from './plant'
@@ -30,10 +31,6 @@ function isAir(y: number): boolean {
 
 function isSoil(y: number): boolean {
   return y >= WORLD.SOIL_Y
-}
-
-function inWorldBounds(x: number, y: number): boolean {
-  return x >= 0 && x < WORLD.W && y >= 0 && y < WORLD.H
 }
 
 /** Корневая ткань в почве. */
@@ -62,7 +59,7 @@ function getCellAt(plant: Plant, x: number, y: number): PlantCell | undefined {
 function neighborsInPlant(plant: Plant, cell: PlantCell): PlantCell[] {
   const result: PlantCell[] = []
   for (const [dx, dy] of NEIGHBOR_DELTA) {
-    const n = getCellAt(plant, cell.x + dx, cell.y + dy)
+    const n = getCellAt(plant, offsetX(cell.x, dx), cell.y + dy)
     if (n) result.push(n)
   }
   return result
@@ -142,7 +139,7 @@ function pruneFloatingAirParts(
 }
 
 function manhattan(x1: number, y1: number, x2: number, y2: number): number {
-  return Math.abs(x1 - x2) + Math.abs(y1 - y2)
+  return xDistance(x1, x2) + Math.abs(y1 - y2)
 }
 
 function resolveSpikeAura(plants: Plant[]): Set<string> {
@@ -194,9 +191,9 @@ function resolveLeafContacts(
       if (!isAir(cell.y)) continue
 
       for (const [dx, dy] of NEIGHBOR_DELTA) {
-        const nx = cell.x + dx
+        const nx = offsetX(cell.x, dx)
         const ny = cell.y + dy
-        if (!inWorldBounds(nx, ny) || !isAir(ny)) continue
+        if (!isYInBounds(ny) || !isAir(ny)) continue
 
         const otherPlantId = occupancy[ny][nx]
         if (otherPlantId <= 0 || otherPlantId === plant.id) continue
@@ -279,9 +276,9 @@ function resolveRootContacts(
       if (!isRootTissue(cell)) continue
 
       for (const [dx, dy] of NEIGHBOR_DELTA) {
-        const nx = cell.x + dx
+        const nx = offsetX(cell.x, dx)
         const ny = cell.y + dy
-        if (!inWorldBounds(nx, ny) || !isSoil(ny)) continue
+        if (!isYInBounds(ny) || !isSoil(ny)) continue
 
         const otherPlantId = occupancy[ny][nx]
         if (otherPlantId <= 0 || otherPlantId === plant.id) continue

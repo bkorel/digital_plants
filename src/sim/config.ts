@@ -99,6 +99,8 @@ export const SEED_SCATTER = 3
 export const SPIKE_COST = 1.5
 /** Энергия на «выстрел» шипа на расстояние 2 клетки */
 export const SHOOT_COST = 2.5
+/** Сколько тиков красная линия выстрела остаётся на экране */
+export const SHOOT_VISUAL_TTL = 48
 /** Радиус от шипа, в котором гибнут чужие листья (манхэттен) */
 /** @deprecated больше не используется — расчистка только колонки посадки */
 export const PLANT_CLEAR_RADIUS = 2

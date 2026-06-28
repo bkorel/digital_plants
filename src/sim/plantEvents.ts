@@ -20,6 +20,16 @@ export interface PlantTickEvent {
   fromY?: number
 }
 
+/** Линия выстрела шипа для отрисовки (живёт несколько тиков). */
+export interface ShootVisual {
+  plantId: number
+  fromX: number
+  fromY: number
+  x: number
+  y: number
+  expireTick: number
+}
+
 export const EVENT_LABELS: Record<PlantEventKind, string> = {
   GROW: 'рост',
   BRANCH: 'ветка',
@@ -41,7 +51,7 @@ export const EVENT_COLORS: Record<PlantEventKind, string> = {
   SEED: '#ffffff',
   SEED_DROP: '#b0bec5',
   SPIKE: '#e040fb',
-  SHOOT: '#ea80fc',
+  SHOOT: '#ff3333',
   GERMINATE: '#80cbc4',
   DEATH: '#ff5252',
 }

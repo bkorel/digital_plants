@@ -57,6 +57,7 @@ import {
   type OpName,
   type SensorName,
 } from './genome'
+import { isInWorld, isYInBounds, offsetX, wrapX } from './coords'
 import { SEED_OCC, isCellFree } from './occupancy'
 import { emitPlantEvent } from './plantEvents'
 import { Rng } from './rng'
@@ -104,7 +105,7 @@ export function createPlant(
 ): Plant {
   const cell: PlantCell = {
     id: nextCellId++,
-    x,
+    x: wrapX(x),
     y,
     type: 'SPROUT',
     dir: 'UP',
@@ -244,7 +245,7 @@ function neighborsOf(plant: Plant, cell: PlantCell): PlantCell[] {
   ]
   const result: PlantCell[] = []
   for (const [dx, dy] of dirs) {
-    const n = getCellAt(plant, cell.x + dx, cell.y + dy)
+    const n = getCellAt(plant, offsetX(cell.x, dx), cell.y + dy)
     if (n) result.push(n)
   }
   return result
@@ -283,9 +284,9 @@ export function readSensorValue(
       return rng.next()
     case 'FOREIGN': {
       const { dx, dy } = DIR_DELTA[dir]
-      const nx = cell.x + dx
+      const nx = offsetX(cell.x, dx)
       const ny = cell.y + dy
-      if (!inBounds(nx, ny)) return 1
+      if (!isYInBounds(ny)) return 1
       const occ = occupancy[ny][nx]
       if (occ === SEED_OCC || (occ > 0 && occ !== plant.id)) return 1
       return 0
@@ -294,16 +295,16 @@ export function readSensorValue(
       return normalizedShadeLevel(occupancy, cell.x, cell.y)
     case 'SHADE_DIR': {
       const { dx, dy } = DIR_DELTA[dir]
-      const nx = cell.x + dx
+      const nx = offsetX(cell.x, dx)
       const ny = cell.y + dy
-      if (!inBounds(nx, ny)) return 1
+      if (!isYInBounds(ny)) return 1
       return normalizedShadeLevel(occupancy, nx, ny)
     }
     case 'MINERAL_DIR': {
       const { dx, dy } = DIR_DELTA[dir]
-      const nx = cell.x + dx
+      const nx = offsetX(cell.x, dx)
       const ny = cell.y + dy
-      if (!inBounds(nx, ny) || ny < WORLD.SOIL_Y) return 0
+      if (!isYInBounds(ny) || ny < WORLD.SOIL_Y) return 0
       return Math.min(1, getMineralAt(minerals, nx, ny) / 20)
     }
     case 'CROWD_ABOVE':
@@ -313,10 +314,6 @@ export function readSensorValue(
     case 'PREV_FAIL':
       return readPrevFailSensor(lastActionOk)
   }
-}
-
-function inBounds(x: number, y: number): boolean {
-  return x >= 0 && x < WORLD.W && y >= 0 && y < WORLD.H
 }
 
 function potential(cell: PlantCell): number {
@@ -341,7 +338,7 @@ export function transportEnergy(plant: Plant): void {
       [1, 0],
       [0, 1],
     ] as const) {
-      const b = posMap.get((a.y + dy) * WORLD.W + (a.x + dx))
+      const b = posMap.get((a.y + dy) * WORLD.W + offsetX(a.x, dx))
       if (!b) continue
 
       const potA = potential(a)
@@ -445,8 +442,8 @@ function canPlace(
   y: number,
   _dir?: Direction,
 ): boolean {
-  if (!inBounds(x, y)) return false
-  if (!isCellFree(occupancy, x, y)) return false
+  if (!isInWorld(x, y)) return false
+  if (!isCellFree(occupancy, wrapX(x), y)) return false
   return true
 }
 
@@ -639,7 +636,7 @@ function spawnMeristem(
   if (plantWaterSupply(plant) < MIN_WATER_FOR_GROW) return false
 
   const { dx, dy } = DIR_DELTA[dir]
-  const nx = cell.x + dx
+  const nx = offsetX(cell.x, dx)
   const ny = cell.y + dy
   if (!canPlace(occupancy, plant.id, nx, ny, dir)) return false
 
@@ -691,9 +688,9 @@ function spawnDoubleGrow(cell: PlantCell, dir: Direction, ctx: VMContext): boole
   if (plantWaterSupply(plant) < MIN_WATER_FOR_GROW) return false
 
   const { dx, dy } = DIR_DELTA[dir]
-  const nx = cell.x + dx
+  const nx = offsetX(cell.x, dx)
   const ny = cell.y + dy
-  const nx2 = cell.x + dx * 2
+  const nx2 = offsetX(cell.x, dx * 2)
   const ny2 = cell.y + dy * 2
 
   if (!canGrowAt(plant, occupancy, cell.y, nx, ny)) return false
@@ -767,7 +764,7 @@ function dropSeed(
   if (cell.y > WORLD.SOIL_Y - MIN_SEED_HEIGHT) return 'слишком низко для семени'
 
   const { dx, dy } = DIR_DELTA[dir]
-  const nx = cell.x + dx
+  const nx = offsetX(cell.x, dx)
   const ny = cell.y + dy
   if (!canPlace(occupancy, plant.id, nx, ny, dir)) return 'нет места для семени'
 
@@ -870,9 +867,9 @@ function placeSpikeCell(
   if (cell.y >= WORLD.SOIL_Y - 1) return null
 
   const { dx, dy } = DIR_DELTA[dir]
-  const nx = cell.x + dx
+  const nx = offsetX(cell.x, dx)
   const ny = cell.y + dy
-  if (!inBounds(nx, ny) || ny >= WORLD.SOIL_Y) return null
+  if (!isYInBounds(ny) || ny >= WORLD.SOIL_Y) return null
 
   const existing = getCellAt(plant, nx, ny)
   if (existing?.type === 'SPIKE') {
@@ -920,9 +917,9 @@ function sproutBeyondSpike(
 ): boolean {
   const { plant, occupancy } = ctx
   const { dx, dy } = DIR_DELTA[dir]
-  const ax = spike.x + dx
+  const ax = offsetX(spike.x, dx)
   const ay = spike.y + dy
-  if (!inBounds(ax, ay) || ay >= WORLD.SOIL_Y) return false
+  if (!isYInBounds(ay) || ay >= WORLD.SOIL_Y) return false
   if (!canPlace(occupancy, plant.id, ax, ay, dir)) return false
   if (plantWaterSupply(plant) < MIN_WATER_FOR_GROW) return false
 

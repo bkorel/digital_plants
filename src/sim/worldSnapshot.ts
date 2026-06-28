@@ -1,6 +1,7 @@
 import { SEED_FALL_DURATION_MS, SEED_FALL_DURATION_TICKS, WORLD } from './config'
 import { cloneGenome } from './genome'
 import { getIdCounters, setIdCounters } from './plant'
+import type { LineageSnapshot } from './lineage'
 import type {
   AppMode,
   EvolutionSnapshot,
@@ -129,7 +130,10 @@ export function applyWorldSnapshot(
   // light уже в snapshot — не пересчитываем
 }
 
-export function snapshotToEvolutionSnapshot(snap: WorldSnapshot): EvolutionSnapshot {
+export function snapshotToEvolutionSnapshot(
+  snap: WorldSnapshot,
+  lineage: LineageSnapshot = { nodes: [] },
+): EvolutionSnapshot {
   return {
     tickCount: snap.tickCount,
     plants: snap.plants.map(clonePlant),
@@ -141,6 +145,7 @@ export function snapshotToEvolutionSnapshot(snap: WorldSnapshot): EvolutionSnaps
     nextPlantId: snap.nextPlantId,
     nextCellId: snap.nextCellId,
     selectedPlantId: snap.selectedPlantId,
+    lineage,
   }
 }
 

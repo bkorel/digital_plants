@@ -564,6 +564,14 @@ textarea {
   flex-shrink: 0;
 }
 
+.app--genome-explorer > .genome-compare,
+.app--genome-explorer > .genome-explorer,
+.app--genome-explorer > .genealogy {
+  grid-row: 2;
+  min-height: 0;
+  align-self: stretch;
+}
+
 button.btn-explore {
   background: #2a3a4a;
   border-color: #4a6a8a;
@@ -581,8 +589,17 @@ button.btn-explore:hover {
   gap: 10px;
   min-height: 0;
   flex: 1;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding-bottom: 8px;
+}
+
+.genome-explorer > .genome-explorer__toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #0f1410;
+  padding-bottom: 4px;
 }
 
 .genome-explorer--empty {
@@ -663,24 +680,28 @@ button.btn-explore:hover {
   grid-template-columns: minmax(320px, 1fr) minmax(380px, 1.2fr);
   gap: 12px;
   min-height: 0;
-  flex: 1;
-  overflow: hidden;
+  flex: 1 1 auto;
+  align-items: start;
 }
 
 .genome-explorer__code,
 .genome-explorer__sim {
   min-height: 0;
-  overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+.genome-explorer__sim > h2,
+.genome-explorer__code > h2 {
+  flex-shrink: 0;
+  margin-top: 0;
 }
 
 .genome-explorer__sim-body {
   display: flex;
   flex-direction: column;
+  gap: 8px;
   min-height: 0;
-  flex: 1;
-  overflow: hidden;
 }
 
 .genome-explorer__hint {
@@ -692,10 +713,6 @@ button.btn-explore:hover {
 }
 
 .genome-explorer__gene-list {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
   padding-right: 4px;
 }
 
@@ -957,13 +974,11 @@ button.btn-explore:hover {
 .genome-explorer__step-log-wrap {
   display: flex;
   flex-direction: column;
-  min-height: 0;
-  flex: 1;
-  overflow: hidden;
+  gap: 6px;
 }
 
 .genome-explorer__step-log-title {
-  margin: 0 0 6px;
+  margin: 0;
   font-size: 0.82rem;
   color: #9aaa9a;
   font-weight: 600;
@@ -974,9 +989,6 @@ button.btn-explore:hover {
   list-style: none;
   margin: 0;
   padding: 0;
-  overflow-y: auto;
-  flex: 1;
-  min-height: 0;
   font-size: 0.75rem;
 }
 
@@ -1086,15 +1098,496 @@ button.btn-explore:hover {
   background: #344858;
 }
 
+/* ── Compare pick bar ── */
+.compare-pick-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: rgba(40, 55, 40, 0.95);
+  border-bottom: 1px solid #4a6a4a;
+  font-size: 0.82rem;
+  color: #c8e0c0;
+}
+
+.compare-pick-bar button {
+  margin-left: auto;
+}
+
+.canvas-wrap--compare-pick {
+  outline: 2px solid #6a8a6a;
+}
+
+button.btn-compare {
+  background: #3a3a2a;
+  border-color: #6a6a4a;
+  color: #e0e0c0;
+}
+
+button.btn-compare:hover {
+  background: #4a4a38;
+}
+
+.plant-inspect__compare-btn {
+  background: #3a3a2a;
+  border: 1px solid #6a6a4a;
+  color: #e0e0c0;
+}
+
+.plant-inspect__compare-btn:hover {
+  background: #4a4a38;
+}
+
+/* ── Genome compare screen ── */
+.genome-compare {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  flex: 1;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-bottom: 8px;
+}
+
+.genome-compare > .genome-explorer__toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #0f1410;
+  padding-bottom: 4px;
+}
+
+.genome-compare__summary,
+.genome-compare__traits {
+  flex-shrink: 0;
+  padding: 10px 12px;
+  background: #141a14;
+  border: 1px solid #2a352a;
+  border-radius: 8px;
+  font-size: 0.82rem;
+}
+
+.genome-compare__summary h3,
+.genome-compare__traits h3 {
+  margin: 0 0 8px;
+  font-size: 0.88rem;
+  color: #b8e0b0;
+}
+
+.genome-compare__summary ul {
+  margin: 0;
+  padding-left: 1.2em;
+  color: #c0d0c0;
+  line-height: 1.5;
+}
+
+.genome-compare__trait-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+
+.genome-compare__trait-table th,
+.genome-compare__trait-table td {
+  padding: 4px 8px;
+  border: 1px solid #2a352a;
+  text-align: left;
+}
+
+.genome-compare__diff {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: #0e120e;
+  border: 1px solid #2a352a;
+  border-radius: 8px;
+}
+
+.genome-compare__diff h3 {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 0.85rem;
+  color: #b8e0b0;
+  border-bottom: 1px solid #2a352a;
+  flex-shrink: 0;
+}
+
+.genome-compare__diff-head,
+.genome-diff__line {
+  display: grid;
+  grid-template-columns: 1.2em 1.5em 2.5em 7em 1fr 1.2fr 1.5em 2.5em 7em 1fr 1.2fr;
+  gap: 4px 6px;
+  align-items: baseline;
+  font-family: ui-monospace, 'Cascadia Code', monospace;
+  font-size: 0.72rem;
+  padding: 2px 8px;
+}
+
+.genome-compare__diff-head {
+  flex-shrink: 0;
+  color: #8a9a8a;
+  border-bottom: 1px solid #2a352a;
+  background: #141a14;
+}
+
+.genome-compare__diff-body {
+  flex-shrink: 0;
+}
+
+.genome-compare__col-prefix {
+  color: #888;
+  font-weight: 700;
+}
+
+.genome-compare__col-hex {
+  color: #a0b0a0;
+}
+
+.genome-compare__col-disasm {
+  color: #d0e0d0;
+}
+
+.genome-compare__col-human {
+  color: #9aaa9a;
+  font-family: inherit;
+  font-size: 0.68rem;
+}
+
+.genome-diff__line--equal {
+  background: transparent;
+}
+
+.genome-diff__line--del {
+  background: rgba(180, 60, 60, 0.22);
+}
+
+.genome-diff__line--ins {
+  background: rgba(60, 160, 80, 0.22);
+}
+
+.genome-diff__line--chg {
+  background: rgba(180, 160, 40, 0.22);
+}
+
+.genome-diff__line--ctx {
+  color: #666;
+}
+
+/* ── Genealogy ── */
+.genealogy {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  flex: 1;
+  overflow-x: hidden;
+  overflow-y: auto;
+  background: #0f1410;
+  color: #e8f0e8;
+}
+
+.genealogy > .genome-explorer__toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #0f1410;
+  padding-bottom: 4px;
+}
+
+.genealogy--empty {
+  padding: 12px;
+  justify-content: flex-start;
+}
+
+.genealogy--empty .genome-explorer__empty-msg {
+  margin: 1rem 0 0;
+  max-width: 42rem;
+  line-height: 1.5;
+  color: #aabaaa;
+}
+
+.genealogy__pick-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: #c8e0c0;
+}
+
+.genealogy__layout {
+  flex: 1;
+  min-height: 12rem;
+  display: grid;
+  grid-template-columns: 1fr min(260px, 32%);
+  gap: 10px;
+  align-items: stretch;
+  overflow: hidden;
+}
+
+.genealogy__layout--compact {
+  grid-template-columns: 1fr min(240px, 30%);
+}
+
+.genealogy__filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  color: #aabaaa;
+  cursor: pointer;
+  user-select: none;
+}
+
+.genealogy__filter input {
+  accent-color: #7ab87a;
+}
+
+.genealogy__list-wrap {
+  overflow: auto;
+  background: #0e120e;
+  border: 1px solid #2a352a;
+  border-radius: 8px;
+  min-height: 12rem;
+  max-height: calc(100vh - 140px);
+}
+
+.genealogy__list-head,
+.genealogy__row {
+  display: grid;
+  grid-template-columns: 18px 10px 52px 28px 52px 36px minmax(72px, 1fr) 4.2em;
+  gap: 6px;
+  align-items: center;
+  font-size: 0.72rem;
+}
+
+.genealogy__list-head-lifespan {
+  text-align: center;
+}
+
+.genealogy__list-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 6px 8px;
+  background: #141a14;
+  border-bottom: 1px solid #2a352a;
+  color: #8a9a8a;
+}
+
+.genealogy__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.genealogy__row {
+  padding: 3px 8px;
+  border-bottom: 1px solid #1a221a;
+  cursor: pointer;
+  color: #c0d0c0;
+}
+
+.genealogy__row:hover {
+  background: #141a14;
+}
+
+.genealogy__row--selected {
+  background: #1a2a1a;
+}
+
+.genealogy__row--pick {
+  outline: 1px solid #b8e0b0;
+}
+
+.genealogy__section-label {
+  padding: 6px 8px 4px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #8a9a8a;
+  background: #121812;
+  border-bottom: 1px solid #2a352a;
+  list-style: none;
+}
+
+.genealogy__row--manual {
+  background: #141810;
+}
+
+.genealogy__row--manual:hover {
+  background: #1a2218;
+}
+
+.genealogy__row--carrier {
+  background: #141a14;
+}
+
+.genealogy__row--ancestor {
+  background: #121610;
+}
+
+.genealogy__empty-row {
+  padding: 12px;
+  color: #9aaa9a;
+  font-size: 0.8rem;
+  list-style: none;
+}
+
+.genealogy__row--extinct {
+  opacity: 0.55;
+}
+
+.genealogy__toggle-btn {
+  padding: 0;
+  width: 16px;
+  height: 16px;
+  line-height: 1;
+  font-size: 0.65rem;
+  background: transparent;
+  border: none;
+  color: #9aaa9a;
+  cursor: pointer;
+}
+
+.genealogy__toggle-spacer {
+  display: inline-block;
+  width: 16px;
+}
+
+.genealogy__swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.genealogy__row-key {
+  font-family: ui-monospace, monospace;
+  color: #b8e0b0;
+}
+
+.genealogy__row-bytes,
+.genealogy__row-spawns,
+.genealogy__row-ticks {
+  color: #9aaa9a;
+  text-align: right;
+}
+
+.genealogy__row-lifespan {
+  min-width: 0;
+  padding: 0 2px;
+}
+
+.genealogy__lifespan {
+  display: block;
+  width: 100%;
+}
+
+.genealogy__lifespan--sm {
+  height: 10px;
+}
+
+.genealogy__lifespan--md {
+  height: 14px;
+}
+
+.genealogy__lifespan-track {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: #1a221a;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.genealogy__lifespan-bar {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  border-radius: 2px;
+  opacity: 0.85;
+  min-width: 2px;
+}
+
+.genealogy__lifespan-bar--alive {
+  opacity: 1;
+  box-shadow: 0 0 0 1px rgba(184, 224, 176, 0.35);
+}
+
+.genealogy__lifespan-now {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  margin-left: -0.5px;
+  background: rgba(200, 220, 200, 0.55);
+  pointer-events: none;
+}
+
+.genealogy__detail-lifespan {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.genealogy__detail-lifespan-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.68rem;
+  color: #8a9a8a;
+}
+
+.genealogy__row-status {
+  color: #a08080;
+}
+
+.genealogy__row-status--active {
+  color: #80c080;
+}
+
+.genealogy__hex {
+  font-size: 0.7rem;
+  word-break: break-all;
+}
+
+.genealogy__detail {
+  overflow: auto;
+}
+
+.genealogy__detail-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  font-size: 0.8rem;
+  margin: 0 0 12px;
+}
+
+.genealogy__detail-grid dt {
+  color: #8a9a8a;
+}
+
+.genealogy__detail-grid dd {
+  margin: 0;
+  color: #d0e0d0;
+}
+
+.genealogy__detail-actions button {
+  width: 100%;
+}
+
 @media (max-width: 960px) {
   .genome-explorer__layout {
     grid-template-columns: 1fr;
-    overflow-y: auto;
-  }
-
-  .genome-explorer__code,
-  .genome-explorer__sim {
-    max-height: 50vh;
   }
 }
 
