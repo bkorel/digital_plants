@@ -7,6 +7,7 @@ import {
   genomeMaxAge,
   genomeSeedReserve,
   genomeShadeSenescence,
+  genomeShootRange,
   doubleGrowthLabel,
   shadeSenescenceLabel,
   type DisasmLine,
@@ -42,6 +43,23 @@ export interface GenomeCompareResult {
   bLength: number
   changedByteCount: number
   changedInstructionCount: number
+}
+
+export interface DiffHunk {
+  id: number
+  header: string
+  rows: AlignedDiffRow[]
+  hiddenBefore: number
+  hiddenAfter: number
+  gapBeforeId?: number
+  startIndex: number
+  endIndex: number
+}
+
+export interface DiffGap {
+  id: number
+  rowCount: number
+  rows: AlignedDiffRow[]
 }
 
 export interface ExplainContext {
@@ -149,27 +167,167 @@ function lcsAlign<T>(a: T[], b: T[], eq: (x: T, y: T) => boolean): Array<{ a?: T
   return result
 }
 
-/** Выравнивание инструкций дизассемблера для side-by-side / unified diff */
+function disasmLineEqual(a: DisasmLine, b: DisasmLine): boolean {
+  return a.text === b.text && a.bytesHex === b.bytesHex
+}
+
+function linesInByteRange(lines: DisasmLine[], start: number, end: number): DisasmLine[] {
+  return lines.filter((l) => l.index >= start && l.index + l.byteLength <= end)
+}
+
+function instructionAtByte(lines: DisasmLine[], byteIdx: number): DisasmLine | undefined {
+  return lines.find((l) => l.index < byteIdx && l.index + l.byteLength > byteIdx)
+}
+
+function snapStart(byteIdx: number, lines: DisasmLine[]): number {
+  if (byteIdx <= 0) return 0
+  const line = instructionAtByte(lines, byteIdx)
+  return line ? line.index : byteIdx
+}
+
+function snapEnd(byteIdx: number, lines: DisasmLine[], len: number): number {
+  const line = instructionAtByte(lines, byteIdx)
+  if (line) return line.index + line.byteLength
+  return Math.min(byteIdx, len)
+}
+
+/** Расширить границы изменённых сегментов до целых инструкций и пересобрать equal-пробелы */
+function snapSegmentsToInstructions(
+  segments: ByteDiffSegment[],
+  linesA: DisasmLine[],
+  linesB: DisasmLine[],
+  lenA: number,
+  lenB: number,
+): ByteDiffSegment[] {
+  const changed = segments
+    .filter((s) => s.kind !== 'equal')
+    .map((s) => ({
+      kind: s.kind,
+      aStart: snapStart(s.aStart, linesA),
+      aEnd: snapEnd(s.aEnd, linesA, lenA),
+      bStart: snapStart(s.bStart, linesB),
+      bEnd: snapEnd(s.bEnd, linesB, lenB),
+    }))
+
+  if (changed.length === 0) {
+    return [{ kind: 'equal', aStart: 0, aEnd: lenA, bStart: 0, bEnd: lenB }]
+  }
+
+  const merged: typeof changed = []
+  for (const ch of changed) {
+    const prev = merged[merged.length - 1]
+    if (prev && prev.aEnd >= ch.aStart && prev.bEnd >= ch.bStart) {
+      prev.aEnd = Math.max(prev.aEnd, ch.aEnd)
+      prev.bEnd = Math.max(prev.bEnd, ch.bEnd)
+      if (prev.kind !== ch.kind) prev.kind = 'replace'
+    } else {
+      merged.push({ ...ch })
+    }
+  }
+
+  const result: ByteDiffSegment[] = []
+  let aPos = 0
+  let bPos = 0
+  for (const ch of merged) {
+    if (aPos < ch.aStart || bPos < ch.bStart) {
+      result.push({ kind: 'equal', aStart: aPos, aEnd: ch.aStart, bStart: bPos, bEnd: ch.bStart })
+    }
+    result.push({
+      kind: ch.kind,
+      aStart: ch.aStart,
+      aEnd: ch.aEnd,
+      bStart: ch.bStart,
+      bEnd: ch.bEnd,
+    })
+    aPos = ch.aEnd
+    bPos = ch.bEnd
+  }
+  if (aPos < lenA || bPos < lenB) {
+    result.push({ kind: 'equal', aStart: aPos, aEnd: lenA, bStart: bPos, bEnd: lenB })
+  }
+  return result
+}
+
+function toRow(aLine?: DisasmLine, bLine?: DisasmLine): AlignedDiffRow {
+  if (aLine && bLine) {
+    const same = disasmLineEqual(aLine, bLine)
+    return { kind: same ? 'equal' : 'chg', aLine, bLine, prefix: same ? ' ' : '!' }
+  }
+  if (aLine) return { kind: 'del', aLine, prefix: '-' }
+  return { kind: 'ins', bLine: bLine!, prefix: '+' }
+}
+
+/** Склеить del/ins в одну строку side-by-side (GitHub split view) */
+export function pairDeleteInsertRows(rows: AlignedDiffRow[]): AlignedDiffRow[] {
+  const result: AlignedDiffRow[] = []
+  let i = 0
+  while (i < rows.length) {
+    const row = rows[i]!
+    if (row.kind === 'equal' || row.kind === 'chg') {
+      result.push(row)
+      i++
+      continue
+    }
+    const runStart = i
+    while (i < rows.length && (rows[i]!.kind === 'del' || rows[i]!.kind === 'ins')) {
+      i++
+    }
+    const run = rows.slice(runStart, i)
+    const dels = run.filter((r) => r.kind === 'del').map((r) => r.aLine!)
+    const inses = run.filter((r) => r.kind === 'ins').map((r) => r.bLine!)
+    const maxLen = Math.max(dels.length, inses.length)
+    for (let k = 0; k < maxLen; k++) {
+      const aLine = dels[k]
+      const bLine = inses[k]
+      if (aLine && bLine) {
+        result.push(toRow(aLine, bLine))
+      } else if (aLine) {
+        result.push({ kind: 'del', aLine, prefix: '-' })
+      } else if (bLine) {
+        result.push({ kind: 'ins', bLine, prefix: '+' })
+      }
+    }
+  }
+  return result
+}
+
+function alignReplaceBlock(aLines: DisasmLine[], bLines: DisasmLine[]): AlignedDiffRow[] {
+  const aligned = lcsAlign(aLines, bLines, disasmLineEqual)
+  const raw = aligned.map(({ a, b }) => toRow(a, b))
+  return pairDeleteInsertRows(raw)
+}
+
+/** Выравнивание инструкций через побайтовые якоря + sub-diff в replace-блоках */
 export function alignDisasm(a: Genome, b: Genome): AlignedDiffRow[] {
   const linesA = disassemble(a)
   const linesB = disassemble(b)
-  const aligned = lcsAlign(linesA, linesB, (x, y) => x.text === y.text && x.bytesHex === y.bytesHex)
+  const rawSegments = diffBytes(a.code, b.code)
+  const segments = snapSegmentsToInstructions(
+    rawSegments,
+    linesA,
+    linesB,
+    a.code.length,
+    b.code.length,
+  )
 
-  return aligned.map(({ a: aLine, b: bLine }) => {
-    if (aLine && bLine) {
-      const same = aLine.text === bLine.text && aLine.bytesHex === bLine.bytesHex
-      return {
-        kind: same ? ('equal' as const) : ('chg' as const),
-        aLine,
-        bLine,
-        prefix: same ? (' ' as const) : ('!' as const),
+  const rows: AlignedDiffRow[] = []
+  for (const seg of segments) {
+    const aLines = linesInByteRange(linesA, seg.aStart, seg.aEnd)
+    const bLines = linesInByteRange(linesB, seg.bStart, seg.bEnd)
+
+    if (seg.kind === 'equal') {
+      for (let k = 0; k < aLines.length; k++) {
+        rows.push(toRow(aLines[k], bLines[k]))
       }
+    } else if (seg.kind === 'delete') {
+      for (const line of aLines) rows.push({ kind: 'del', aLine: line, prefix: '-' })
+    } else if (seg.kind === 'insert') {
+      for (const line of bLines) rows.push({ kind: 'ins', bLine: line, prefix: '+' })
+    } else {
+      rows.push(...alignReplaceBlock(aLines, bLines))
     }
-    if (aLine) {
-      return { kind: 'del' as const, aLine, prefix: '-' as const }
-    }
-    return { kind: 'ins' as const, bLine, prefix: '+' as const }
-  })
+  }
+  return rows
 }
 
 function countChangedBytes(segments: ByteDiffSegment[]): number {
@@ -222,6 +380,7 @@ function traitDiffs(a: Genome, b: Genome): TraitDiff[] {
     shadeSenescenceLabel(genomeShadeSenescence(a)),
     shadeSenescenceLabel(genomeShadeSenescence(b)),
   )
+  add('дальность SHOOT', `${genomeShootRange(a)} кл.`, `${genomeShootRange(b)} кл.`)
   return pairs
 }
 
@@ -283,34 +442,151 @@ export function explainGenomeDiff(
   return { summary, traits }
 }
 
-/** Строки unified diff с контекстом (как git diff -U3) */
-export function unifiedDiffRows(
+function formatHunkHeader(
+  aStartIp: number | undefined,
+  aEndIp: number | undefined,
+  bStartIp: number | undefined,
+  bEndIp: number | undefined,
+): string {
+  const aPart =
+    aStartIp != null && aEndIp != null ? `A ip ${aStartIp}–${aEndIp}` : 'A —'
+  const bPart =
+    bStartIp != null && bEndIp != null ? `B ip ${bStartIp}–${bEndIp}` : 'B —'
+  return `@@ ${aPart} · ${bPart} @@`
+}
+
+export function getFullDiffRows(cmp: GenomeCompareResult): AlignedDiffRow[] {
+  return cmp.alignedRows
+}
+
+/** Hunks с контекстом (как GitHub / git diff -U3) */
+export function buildDiffHunks(
   cmp: GenomeCompareResult,
-  contextLines = 2,
-): AlignedDiffRow[] {
+  contextLines = 3,
+): { hunks: DiffHunk[]; gaps: DiffGap[]; fullRows: AlignedDiffRow[]; trailingGapId?: number } {
   const rows = cmp.alignedRows
+  const fullRows = rows
+
+  if (rows.length === 0) {
+    return { hunks: [], gaps: [], fullRows }
+  }
+
   const changed = new Set<number>()
   for (let i = 0; i < rows.length; i++) {
     if (rows[i]!.kind !== 'equal') changed.add(i)
   }
-  if (changed.size === 0) return rows
+
+  if (changed.size === 0) {
+    return {
+      hunks: [
+        {
+          id: 0,
+          header: '@@ весь геном @@',
+          rows,
+          hiddenBefore: 0,
+          hiddenAfter: 0,
+          startIndex: 0,
+          endIndex: rows.length - 1,
+        },
+      ],
+      gaps: [],
+      fullRows,
+    }
+  }
 
   const include = new Set<number>()
   for (const idx of changed) {
-    for (let k = Math.max(0, idx - contextLines); k <= Math.min(rows.length - 1, idx + contextLines); k++) {
+    for (
+      let k = Math.max(0, idx - contextLines);
+      k <= Math.min(rows.length - 1, idx + contextLines);
+      k++
+    ) {
       include.add(k)
     }
   }
 
-  const result: AlignedDiffRow[] = []
-  let prev = -2
-  for (let i = 0; i < rows.length; i++) {
-    if (!include.has(i)) continue
-    if (prev >= 0 && i > prev + 1) {
-      result.push({ kind: 'ctx', prefix: ' ', })
+  const sorted = [...include].sort((a, b) => a - b)
+  const ranges: Array<[number, number]> = []
+  let rangeStart = sorted[0]!
+  let prev = sorted[0]!
+  for (let i = 1; i < sorted.length; i++) {
+    const idx = sorted[i]!
+    if (idx > prev + 1) {
+      ranges.push([rangeStart, prev])
+      rangeStart = idx
     }
-    result.push(rows[i]!)
-    prev = i
+    prev = idx
+  }
+  ranges.push([rangeStart, prev])
+
+  const gaps: DiffGap[] = []
+  const hunks: DiffHunk[] = []
+  let gapId = 0
+
+  const addGap = (gapStart: number, gapEnd: number): number | undefined => {
+    if (gapEnd < gapStart) return undefined
+    const gap: DiffGap = {
+      id: gapId++,
+      rowCount: gapEnd - gapStart + 1,
+      rows: rows.slice(gapStart, gapEnd + 1),
+    }
+    gaps.push(gap)
+    return gap.id
+  }
+
+  for (let h = 0; h < ranges.length; h++) {
+    const [start, end] = ranges[h]!
+    const gapBeforeId =
+      h === 0
+        ? start > 0
+          ? addGap(0, start - 1)
+          : undefined
+        : addGap(ranges[h - 1]![1] + 1, start - 1)
+
+    const hunkRows = rows.slice(start, end + 1)
+    const aStartIp = hunkRows.find((r) => r.aLine)?.aLine?.index
+    const aEndIp = [...hunkRows].reverse().find((r) => r.aLine)?.aLine?.index
+    const bStartIp = hunkRows.find((r) => r.bLine)?.bLine?.index
+    const bEndIp = [...hunkRows].reverse().find((r) => r.bLine)?.bLine?.index
+
+    hunks.push({
+      id: h,
+      header: formatHunkHeader(aStartIp, aEndIp, bStartIp, bEndIp),
+      rows: hunkRows,
+      hiddenBefore: start,
+      hiddenAfter: h < ranges.length - 1 ? 0 : rows.length - 1 - end,
+      gapBeforeId,
+      startIndex: start,
+      endIndex: end,
+    })
+  }
+
+  const lastEnd = ranges[ranges.length - 1]![1]
+  const trailingGapId =
+    lastEnd < rows.length - 1 ? addGap(lastEnd + 1, rows.length - 1) : undefined
+
+  return { hunks, gaps, fullRows, trailingGapId }
+}
+
+/** @deprecated Используйте buildDiffHunks */
+export function unifiedDiffRows(
+  cmp: GenomeCompareResult,
+  contextLines = 2,
+): AlignedDiffRow[] {
+  const { hunks, gaps } = buildDiffHunks(cmp, contextLines)
+  const result: AlignedDiffRow[] = []
+  for (const hunk of hunks) {
+    if (hunk.gapBeforeId != null) {
+      result.push({ kind: 'ctx', prefix: ' ' })
+    }
+    result.push(...hunk.rows)
+  }
+  if (gaps.length > 0 && hunks.length > 0) {
+    const lastHunkEnd = hunks[hunks.length - 1]!.endIndex
+    if (lastHunkEnd < cmp.alignedRows.length - 1) {
+      result.push({ kind: 'ctx', prefix: ' ' })
+    }
   }
   return result
 }
+
