@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type MutableRefObject } from 'react'
+import { recordDraw } from '../dev/perfProbe'
 import { CAP, SEED_FALL_DURATION_MS, WORLD } from '../sim/config'
 import { genomeColor } from '../sim/genome'
 import { mineralColorCss, getMineralAt } from '../sim/environment'
@@ -19,6 +20,7 @@ interface Props {
   appMode: AppMode
   onSelectPlant: (plantId: number | null) => void
   onTakeToLaboratory: (plantId: number) => void
+  onExploreGenome?: (plantId: number) => void
   plantPlacementActive?: boolean
   plantPreviewX?: number
   onPlantPreviewMove?: (x: number) => void
@@ -174,6 +176,7 @@ export default function WorldCanvas({
   appMode,
   onSelectPlant,
   onTakeToLaboratory,
+  onExploreGenome,
   plantPlacementActive = false,
   plantPreviewX = Math.floor(WORLD.W / 2),
   onPlantPreviewMove,
@@ -236,6 +239,7 @@ export default function WorldCanvas({
     if (!ctx) return
 
     const draw = () => {
+    const drawT0 = performance.now()
     const w = Math.round(WORLD.W * cellSize)
     const h = Math.round(WORLD.H * cellSize)
     if (canvas.width !== w || canvas.height !== h) {
@@ -476,6 +480,7 @@ export default function WorldCanvas({
     ctx.moveTo(0, soilLine)
     ctx.lineTo(w, soilLine)
     ctx.stroke()
+    recordDraw(performance.now() - drawT0)
     }
 
     drawRef.current = draw
@@ -532,6 +537,9 @@ export default function WorldCanvas({
           plant={selectedPlant}
           showTakeButton={appMode === 'EVOLUTION'}
           onTakeToLaboratory={() => onTakeToLaboratory(selectedPlant.id)}
+          onExploreGenome={
+            onExploreGenome ? () => onExploreGenome(selectedPlant.id) : undefined
+          }
         />
       )}
       <canvas

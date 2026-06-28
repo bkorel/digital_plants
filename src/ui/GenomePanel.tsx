@@ -5,6 +5,7 @@ import {
   genomeDoubleGrowth,
   genomeHeightCap,
   genomeMaxAge,
+  genomeOriginLabel,
   genomeSeedReserve,
   genomeShadeSenescence,
   serializeGenome,
@@ -23,6 +24,7 @@ interface Props {
   onRemoveFromCollection: (id: string) => void
   onPlantFromCollection: (genome: Genome) => void
   onPlantFromPaste: (json: string) => void
+  onExploreGenome?: () => void
 }
 
 export default function GenomePanel({
@@ -33,6 +35,7 @@ export default function GenomePanel({
   onRemoveFromCollection,
   onPlantFromCollection,
   onPlantFromPaste,
+  onExploreGenome,
 }: Props) {
   const [pasteText, setPasteText] = useState('')
   const [saveName, setSaveName] = useState('')
@@ -129,7 +132,8 @@ export default function GenomePanel({
 
       <div style={{ fontSize: '0.8rem', marginBottom: 8 }}>
         <div>
-          байт: {g.code.length} | maxAge: {genomeMaxAge(g)} | seedReserve: {genomeSeedReserve(g)}
+          тип: {genomeOriginLabel(g)} | байт: {g.code.length} | maxAge: {genomeMaxAge(g)} | seedReserve:{' '}
+          {genomeSeedReserve(g)}
         </div>
         <div>
           потолок высоты: ~{Math.round(genomeHeightCap(g) * WORLD.SOIL_Y)} кл. | глубина корней: ~
@@ -143,6 +147,11 @@ export default function GenomePanel({
 
       <div className="controls-row">
         <button onClick={copyGenome}>Копировать геном</button>
+        {onExploreGenome && (
+          <button type="button" className="btn-explore" onClick={onExploreGenome}>
+            Исследовать геном
+          </button>
+        )}
         <input
           type="text"
           placeholder="Имя в коллекции"

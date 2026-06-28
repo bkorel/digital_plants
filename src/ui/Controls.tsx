@@ -4,6 +4,7 @@ interface Props {
   viewMode: ViewMode
   seed: number
   appMode: AppMode
+  lastRestartRandomGenomes?: boolean
   onViewModeChange: (mode: ViewMode) => void
   onSeedChange: (seed: number) => void
 }
@@ -22,6 +23,7 @@ export default function Controls({
   viewMode,
   seed,
   appMode,
+  lastRestartRandomGenomes,
   onViewModeChange,
   onSeedChange,
 }: Props) {
@@ -30,14 +32,22 @@ export default function Controls({
       <h2>Отображение</h2>
 
       {appMode === 'EVOLUTION' && (
-        <label>
-          Сид ГПСЧ
-          <input
-            type="number"
-            value={seed}
-            onChange={(e) => onSeedChange(Number(e.target.value))}
-          />
-        </label>
+        <>
+          <label>
+            Сид ГПСЧ
+            <input
+              type="number"
+              value={seed}
+              onChange={(e) => onSeedChange(Number(e.target.value))}
+            />
+          </label>
+          <p className="controls-hint">
+            Стартовые геномы: случайный байткод (6–160 байт), без шаблона «до крыши».
+            {lastRestartRandomGenomes
+              ? ' Последний запуск — «Рестарт случайный» (новый сид).'
+              : ' «Рестарт» — тот же сид, другая раскладка клеток.'}
+          </p>
+        </>
       )}
 
       <h3>Режим отображения</h3>

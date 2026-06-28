@@ -5,13 +5,19 @@ interface Props {
   plant: Plant
   showTakeButton: boolean
   onTakeToLaboratory: () => void
+  onExploreGenome?: () => void
 }
 
 function fmt(n: number, digits = 1): string {
   return n.toFixed(digits)
 }
 
-export default function PlantInspectOverlay({ plant, showTakeButton, onTakeToLaboratory }: Props) {
+export default function PlantInspectOverlay({
+  plant,
+  showTakeButton,
+  onTakeToLaboratory,
+  onExploreGenome,
+}: Props) {
   const s = computePlantInspectStats(plant)
 
   return (
@@ -43,11 +49,18 @@ export default function PlantInspectOverlay({ plant, showTakeButton, onTakeToLab
         <dt>Энергия сейчас</dt>
         <dd>{fmt(s.totalEnergy)}</dd>
       </dl>
-      {showTakeButton && (
-        <button type="button" className="plant-inspect__lab-btn" onClick={onTakeToLaboratory}>
-          Забрать в лабораторию
-        </button>
-      )}
+      <div className="plant-inspect__actions">
+        {onExploreGenome && (
+          <button type="button" className="plant-inspect__explore-btn" onClick={onExploreGenome}>
+            Исследовать геном
+          </button>
+        )}
+        {showTakeButton && (
+          <button type="button" className="plant-inspect__lab-btn" onClick={onTakeToLaboratory}>
+            Забрать в лабораторию
+          </button>
+        )}
+      </div>
     </div>
   )
 }

@@ -84,7 +84,7 @@ export const SEED_SOIL_UPKEEP = 0.008
 /** Минимальная энергия в только что созданном семени (можно «выстрелить» с меньшим запасом) */
 export const SEED_MIN_PAYLOAD = 1
 /** Доп. метаболические затраты на образование семени (сжигаются, не попадают в семя) */
-export const SEED_FORMATION_OVERHEAD = 3
+export const SEED_FORMATION_OVERHEAD = 2
 export const MAX_GERMINATIONS_PER_TICK = 4
 /** 0 — только занятость ячейки; >0 блокирует соседние колонки (конфликтует с малым SEED_SCATTER) */
 export const GERMINATION_NEIGHBOR_BLOCK = 0

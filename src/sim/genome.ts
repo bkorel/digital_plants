@@ -263,13 +263,29 @@ function asm(tokens: number[]): number[] {
   return tokens
 }
 
+/** Стартовый геном при рестарте: только случайный байткод (воспроизводимо от сида ГПСЧ). */
 export function randomGenome(rng: Rng): Genome {
-  if (rng.chance(0.85)) return viableTemplateGenome(rng)
+  return fullyRandomGenome(rng)
+}
 
-  const len = rng.nextInt(GENOME.RANDOM_GENE_COUNT_MIN * 3, GENOME.RANDOM_GENE_COUNT_MAX * 4)
+/** Полностью случайные байты — без шаблона «живучего» генома */
+export function fullyRandomGenome(rng: Rng): Genome {
+  const len = rng.nextInt(GENOME.MIN_BYTES, GENOME.MAX_BYTES)
   const code = new Uint8Array(len)
   for (let i = 0; i < len; i++) code[i] = rng.nextInt(0, 255)
   return { code }
+}
+
+/** Эвристика: старый «живучий» шаблон с маркером тени в хвосте (длина ~300+ байт). */
+export function looksLikeTemplateGenome(genome: Genome): boolean {
+  const code = genome.code
+  if (code.length < 100) return false
+  const last = code[code.length - 1]
+  return last === GENOME_META_SHADE_LIGNIFY || last === GENOME_META_SHADE_MINERALIZE
+}
+
+export function genomeOriginLabel(genome: Genome): string {
+  return looksLikeTemplateGenome(genome) ? 'шаблон роста' : 'случайный байткод'
 }
 
 /**
@@ -280,19 +296,29 @@ function viableTemplateGenome(rng: Rng): Genome {
   const depthThr = clamp01(rng.next() * 0.22 + 0.55)
   const rootBranchP = clamp01(rng.next() * 0.18 + 0.38)
   const rootBranchDeepP = clamp01(rng.next() * 0.15 + 0.28)
-  const heightThr = clamp01(rng.next() * 0.18 + 0.24)
+  const crownMax = clamp01(rng.next() * 0.08 + 0.78)
+  const heightThr = crownMax
+  const crownSideLow = clamp01(rng.next() * 0.06 + 0.10)
+  const crownSideTop = clamp01(crownMax * 0.92)
   const sideBranchP = clamp01(rng.next() * 0.2 + 0.32)
-  const seedEnergyThr = clamp01(rng.next() * 0.04 + 0.06)
-  const seedHeight = clamp01(rng.next() * 0.04 + 0.06)
+  const seedEnergyThr = 0.01
+  const seedHeight = clamp01(rng.next() * 0.02 + 0.02)
+  const growEnergyThr = clamp01(rng.next() * 0.05 + 0.10)
   const seedAgeLate = clamp01(rng.next() * 0.15 + 0.45)
 
   const code: number[] = asm([
-    // якорь у поверхности
+    // якорь у поверхности — нужен для опоры перед ростом в воздух
     OP('DIR'), DIRB('DOWN'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.03), OP('LT'),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.04), OP('LT'),
     OP('AND'), OP('IF'),
     OP('BRANCH'),
+    // первый побег в воздух (низкая высота — один раз выйти из почвы)
+    OP('DIR'), DIRB('UP'),
+    OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.03), OP('LT'),
+    OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.03), OP('LT'),
+    OP('AND'), OP('IF'),
+    OP('GROW'),
     // главный корень вниз
     OP('DIR'), DIRB('DOWN'),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.01), OP('LT'),
@@ -300,7 +326,7 @@ function viableTemplateGenome(rng: Rng): Genome {
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(depthThr), OP('LT'),
     OP('AND'), OP('AND'), OP('IF'),
     OP('GROW'),
-    // боковые корни — сразу после стержневого (пока меристема в почве)
+    // боковые корни — после стержневого
     OP('DIR'), DIRB('LEFT'),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.01), OP('LT'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.05), OP('GT'),
@@ -313,48 +339,57 @@ function viableTemplateGenome(rng: Rng): Genome {
     OP('SENSE'), SENS('RANDOM'), OP('PUSH'), LIT(rootBranchP), OP('LT'),
     OP('AND'), OP('AND'), OP('IF'),
     OP('BRANCH'),
-    // стебель вверх (низкий порог энергии — рост важнее семян)
-    OP('DIR'), DIRB('UP'),
-    OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.03), OP('LT'),
-    OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(heightThr), OP('LT'),
-    OP('AND'), OP('IF'),
-    OP('GROW'),
-    // семя — сразу после роста стебля, до боковых веток (чтобы уложиться в бюджет тика)
+    // семя — до продолжения роста вверх (иначе GROW съедает прогон каждый тик)
     OP('DIR'), DIRB('UP'),
     OP('SENSE'), SENS('ENERGY'), OP('PUSH'), LIT(seedEnergyThr), OP('GT'),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(seedHeight), OP('GT'),
     OP('AND'), OP('IF'),
-    OP('SEED'), LIT(0.72),
+    OP('SEED'), LIT(0.28),
+    // повторное семя на кроне — когда рост вверх уже не нужен
+    OP('DIR'), DIRB('UP'),
+    OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.15), OP('GT'),
+    OP('SENSE'), SENS('ENERGY'), OP('PUSH'), LIT(0.01), OP('GT'),
+    OP('AND'), OP('IF'),
+    OP('SEED'), LIT(0.20),
+    // продолжение роста вверх — чуть ниже «крыши», только при запасе энергии
+    OP('DIR'), DIRB('UP'),
+    OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.03), OP('LT'),
+    OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(heightThr), OP('LT'),
+    OP('SENSE'), SENS('ENERGY'), OP('PUSH'), LIT(growEnergyThr), OP('GT'),
+    OP('AND'), OP('AND'), OP('IF'),
+    OP('GROW'),
+    // позднее семя при возрасте
     OP('DIR'), DIRB('UP'),
     OP('SENSE'), SENS('AGE'), OP('PUSH'), LIT(seedAgeLate), OP('GT'),
-    OP('SENSE'), SENS('ENERGY'), OP('PUSH'), LIT(0.08), OP('GT'),
-    OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.1), OP('GT'),
+    OP('SENSE'), SENS('ENERGY'), OP('PUSH'), LIT(0.01), OP('GT'),
+    OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.05), OP('GT'),
     OP('AND'), OP('AND'), OP('IF'),
-    OP('SEED'), LIT(0.85),
+    OP('SEED'), LIT(0.35),
     // боковая крона — умеренно, при достаточной энергии
     OP('DIR'), DIRB('LEFT'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.03), OP('LT'),
-    OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.04), OP('GT'),
-    OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.22), OP('LT'),
+    OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(crownSideLow), OP('GT'),
+    OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(crownSideTop), OP('LT'),
     OP('SENSE'), SENS('ENERGY'), OP('PUSH'), LIT(0.14), OP('GT'),
     OP('SENSE'), SENS('RANDOM'), OP('PUSH'), LIT(sideBranchP), OP('LT'),
     OP('AND'), OP('AND'), OP('AND'), OP('AND'), OP('IF'),
     OP('BRANCH'),
     OP('DIR'), DIRB('RIGHT'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.03), OP('LT'),
-    OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.04), OP('GT'),
-    OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.22), OP('LT'),
+    OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(crownSideLow), OP('GT'),
+    OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(crownSideTop), OP('LT'),
     OP('SENSE'), SENS('ENERGY'), OP('PUSH'), LIT(0.14), OP('GT'),
     OP('SENSE'), SENS('RANDOM'), OP('PUSH'), LIT(sideBranchP), OP('LT'),
     OP('AND'), OP('AND'), OP('AND'), OP('AND'), OP('IF'),
     OP('BRANCH'),
-    // второй побег вверх — только при хорошем запасе
+    // второй побег вверх — в пределах кроны, не у самой крыши
     OP('DIR'), DIRB('UP'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.03), OP('LT'),
-    OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.06), OP('GT'),
+    OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(crownSideLow), OP('GT'),
+    OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(crownMax), OP('LT'),
     OP('SENSE'), SENS('ENERGY'), OP('PUSH'), LIT(0.28), OP('GT'),
     OP('SENSE'), SENS('RANDOM'), OP('PUSH'), LIT(0.28), OP('LT'),
-    OP('AND'), OP('AND'), OP('AND'), OP('IF'),
+    OP('AND'), OP('AND'), OP('AND'), OP('AND'), OP('IF'),
     OP('BRANCH'),
     // глубокие боковые корни
     OP('DIR'), DIRB('LEFT'),

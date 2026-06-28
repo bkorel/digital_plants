@@ -44,12 +44,13 @@ import {
   genomeSeedReserve,
   genomeDoubleGrowth,
   opArgCount,
+  type OpName,
   type SensorName,
 } from './genome'
 import { SEED_OCC, isCellFree } from './occupancy'
 import { emitPlantEvent } from './plantEvents'
-import type { Direction, Genome, Plant, PlantCell, PlantInspectStats, SeedInSoil } from './types'
 import { Rng } from './rng'
+import type { Direction, Genome, Plant, PlantCell, PlantInspectStats, SeedInSoil } from './types'
 
 let nextCellId = 1
 let nextPlantId = 1
@@ -239,8 +240,8 @@ function neighborsOf(plant: Plant, cell: PlantCell): PlantCell[] {
   return result
 }
 
-/** Значение сенсора, нормализованное в 0..1 */
-function senseValue(
+/** Значение сенсора, нормализованное в 0..1 (экспорт для UI-трассировки) */
+export function readSensorValue(
   sensor: SensorName,
   plant: Plant,
   cell: PlantCell,
@@ -465,6 +466,106 @@ interface CellRun {
   attempted: boolean
 }
 
+/** Один шаг исполнения VM для UI «Исследование генома» */
+export interface VmStepTrace {
+  stepIndex: number
+  ip: number
+  opcode: OpName
+  text: string
+  dir: Direction
+  stackBefore: number[]
+  stackAfter: number[]
+  note: string
+  skippedNext?: boolean
+  structuralAttempt?: boolean
+  structuralSuccess?: boolean
+  runEnded?: boolean
+}
+
+export interface MeristemRunTrace {
+  cellId: number
+  x: number
+  y: number
+  zone: 'soil' | 'air'
+  initialDir: Direction
+  initialSensors: { name: SensorName; value: number }[]
+  steps: VmStepTrace[]
+  actionsTaken: number
+  matured: boolean
+  attempted: boolean
+  outcome: string
+}
+
+export interface GrowthVmTrace {
+  growActionBudget: number
+  rootBudget: number
+  runs: MeristemRunTrace[]
+}
+
+function snapshotSensors(
+  plant: Plant,
+  cell: PlantCell,
+  dir: Direction,
+  occupancy: Int32Array[],
+  light: Float32Array,
+  minerals: Float32Array,
+  rng: Rng,
+): { name: SensorName; value: number }[] {
+  const names: SensorName[] = [
+    'ENERGY',
+    'LIGHT',
+    'WATER',
+    'MINERALS',
+    'DEPTH',
+    'HEIGHT',
+    'AGE',
+    'RANDOM',
+    'FOREIGN',
+    'SHADE',
+    'SHADE_DIR',
+    'MINERAL_DIR',
+    'CROWD_ABOVE',
+  ]
+  return names.map((name) => ({
+    name,
+    value: readSensorValue(name, plant, cell, dir, occupancy, light, minerals, rng),
+  }))
+}
+
+function formatInstrText(op: OpName, arg: number): string {
+  if (op === 'PUSH') return `PUSH ${decodeLiteral(arg).toFixed(2)}`
+  if (op === 'SENSE') return `SENSE ${decodeSensor(arg)}`
+  if (op === 'DIR') return `DIR ${decodeDir(arg)}`
+  if (op === 'SEED') return `SEED ${decodeLiteral(arg).toFixed(2)}`
+  return op
+}
+
+function recordVmStep(
+  trace: VmStepTrace[] | undefined,
+  stepIndex: number,
+  ip: number,
+  opcode: OpName,
+  arg: number,
+  dir: Direction,
+  stackBefore: number[],
+  stackAfter: number[],
+  note: string,
+  extra?: Partial<VmStepTrace>,
+): number {
+  trace?.push({
+    stepIndex,
+    ip,
+    opcode,
+    text: formatInstrText(opcode, arg),
+    dir,
+    stackBefore: [...stackBefore],
+    stackAfter: [...stackAfter],
+    note,
+    ...extra,
+  })
+  return stepIndex + 1
+}
+
 interface VMContext {
   plant: Plant
   occupancy: Int32Array[]
@@ -618,11 +719,16 @@ function dropSeed(
 
   const frac = Math.max(0, Math.min(1, energyFraction))
   const maxReserve = genomeSeedReserve(plant.genome)
-  const target = Math.max(
+  let target = Math.max(
     SEED_MIN_PAYLOAD,
     Math.round(SEED_MIN_PAYLOAD + (maxReserve - SEED_MIN_PAYLOAD) * frac),
   )
-  const sources = [cell, ...neighborsOf(plant, cell)]
+  // Не требовать больше, чем растение может выделить (иначе SEED никогда не проходит)
+  const affordable = Math.max(
+    SEED_MIN_PAYLOAD,
+    Math.floor(plantTotalEnergy(plant) * 0.25),
+  )
+  target = Math.min(target, affordable)
   const deductions = new Map<number, number>()
 
   const takeFrom = (src: PlantCell, amount: number, minLeft: number): number => {
@@ -642,17 +748,35 @@ function dropSeed(
       seedEnergy += take
       need -= take
     }
+    if (need > 0) {
+      const remote = plant.cells
+        .filter((c) => c.id !== cell.id && !neighborsOf(plant, cell).includes(c))
+        .sort((a, b) => b.cellEnergy - a.cellEnergy)
+      for (const src of remote) {
+        if (need <= 0) break
+        const take = takeFrom(src, need, 0.25)
+        seedEnergy += take
+        need -= take
+      }
+    }
   }
   if (seedEnergy < SEED_MIN_PAYLOAD) return false
 
   let overhead = SEED_FORMATION_OVERHEAD
-  for (const src of sources) {
+  const overheadSources = [
+    cell,
+    ...neighborsOf(plant, cell),
+    ...plant.cells
+      .filter((c) => c.id !== cell.id && !neighborsOf(plant, cell).includes(c))
+      .sort((a, b) => b.cellEnergy - a.cellEnergy),
+  ]
+  for (const src of overheadSources) {
     if (overhead <= 0) break
-    overhead -= takeFrom(src, overhead, 0.3)
+    overhead -= takeFrom(src, overhead, 0.25)
   }
   if (overhead > 0) return false
 
-  for (const src of sources) {
+  for (const src of plant.cells) {
     const amount = deductions.get(src.id)
     if (amount != null && amount > 0) src.cellEnergy -= amount
   }
@@ -795,7 +919,12 @@ function shootSpike(cell: PlantCell, dir: Direction, ctx: VMContext): boolean {
  *
  * `maxActions` — сколько ещё структурных действий разрешено растению в этом тике.
  */
-function runCellProgram(cell: PlantCell, ctx: VMContext, maxActions: number): CellRun {
+function runCellProgram(
+  cell: PlantCell,
+  ctx: VMContext,
+  maxActions: number,
+  trace?: VmStepTrace[],
+): CellRun {
   const code = ctx.plant.genome.code
   if (code.length === 0 || maxActions <= 0) {
     return { actions: 0, matured: false, attempted: false }
@@ -805,76 +934,152 @@ function runCellProgram(cell: PlantCell, ctx: VMContext, maxActions: number): Ce
   let dir: Direction = cell.dir
   let ip = 0
   let steps = 0
+  let traceStep = 0
   let attempted = false
   let actions = 0
+
+  const logStep = (
+    opcode: OpName,
+    arg: number,
+    before: number[],
+    after: number[],
+    note: string,
+    extra?: Partial<VmStepTrace>,
+  ) => {
+    traceStep = recordVmStep(trace, traceStep, ip, opcode, arg, dir, before, after, note, extra)
+  }
 
   while (steps < VM_STEP_BUDGET && ip < code.length) {
     steps++
     const op = decodeOp(code[ip])
     const arg = ip + 1 < code.length ? code[ip + 1] : 0
+    const stackBefore = [...stack]
 
     switch (op) {
       case 'NOP':
+        logStep(op, arg, stackBefore, stack, 'Пустая операция')
         ip++
         break
-      case 'PUSH':
-        stack.push(decodeLiteral(arg))
+      case 'PUSH': {
+        const val = decodeLiteral(arg)
+        stack.push(val)
+        logStep(op, arg, stackBefore, stack, `На стек: ${val.toFixed(2)}`)
         ip += 2
         break
-      case 'SENSE':
-        stack.push(
-          senseValue(
-            decodeSensor(arg),
-            ctx.plant,
-            cell,
-            dir,
-            ctx.occupancy,
-            ctx.light,
-            ctx.minerals,
-            ctx.rng,
-          ),
+      }
+      case 'SENSE': {
+        const sensor = decodeSensor(arg)
+        const val = readSensorValue(
+          sensor,
+          ctx.plant,
+          cell,
+          dir,
+          ctx.occupancy,
+          ctx.light,
+          ctx.minerals,
+          ctx.rng,
+        )
+        stack.push(val)
+        logStep(
+          op,
+          arg,
+          stackBefore,
+          stack,
+          `SENSE ${sensor} → ${val.toFixed(3)}`,
         )
         ip += 2
         break
-      case 'DIR':
+      }
+      case 'DIR': {
         dir = decodeDir(arg)
+        logStep(op, arg, stackBefore, stack, `Направление: ${dir}`)
         ip += 2
         break
+      }
       case 'LT': {
         const a = stack.pop() ?? 0
         const b = stack.pop() ?? 0
-        stack.push(b < a ? 1 : 0)
+        const result = b < a ? 1 : 0
+        stack.push(result)
+        logStep(
+          op,
+          arg,
+          stackBefore,
+          stack,
+          `${b.toFixed(2)} < ${a.toFixed(2)} → ${result}`,
+        )
         ip++
         break
       }
       case 'GT': {
         const a = stack.pop() ?? 0
         const b = stack.pop() ?? 0
-        stack.push(b > a ? 1 : 0)
+        const result = b > a ? 1 : 0
+        stack.push(result)
+        logStep(
+          op,
+          arg,
+          stackBefore,
+          stack,
+          `${b.toFixed(2)} > ${a.toFixed(2)} → ${result}`,
+        )
         ip++
         break
       }
       case 'AND': {
         const a = stack.pop() ?? 0
         const b = stack.pop() ?? 0
-        stack.push(a >= 0.5 && b >= 0.5 ? 1 : 0)
+        const result = a >= 0.5 && b >= 0.5 ? 1 : 0
+        stack.push(result)
+        logStep(
+          op,
+          arg,
+          stackBefore,
+          stack,
+          `AND(${a.toFixed(2)}, ${b.toFixed(2)}) → ${result}`,
+        )
         ip++
         break
       }
       case 'OR': {
         const a = stack.pop() ?? 0
         const b = stack.pop() ?? 0
-        stack.push(a >= 0.5 || b >= 0.5 ? 1 : 0)
+        const result = a >= 0.5 || b >= 0.5 ? 1 : 0
+        stack.push(result)
+        logStep(
+          op,
+          arg,
+          stackBefore,
+          stack,
+          `OR(${a.toFixed(2)}, ${b.toFixed(2)}) → ${result}`,
+        )
         ip++
         break
       }
       case 'IF': {
         const v = stack.pop() ?? 0
-        ip++
         if (v < 0.5 && ip < code.length) {
-          // пропустить следующую инструкцию вместе с её аргументом
           const skipOp = decodeOp(code[ip])
-          ip += 1 + opArgCount(skipOp)
+          const skipLen = 1 + opArgCount(skipOp)
+          const skipText = formatInstrText(skipOp, ip + 1 < code.length ? code[ip + 1] : 0)
+          logStep(
+            op,
+            arg,
+            stackBefore,
+            stack,
+            `Условие ${v.toFixed(2)} < 0.5 — пропуск: ${skipText}`,
+            { skippedNext: true },
+          )
+          ip += skipLen
+        } else {
+          logStep(
+            op,
+            arg,
+            stackBefore,
+            stack,
+            `Условие ${v.toFixed(2)} ≥ 0.5 — выполняем следующую инструкцию`,
+          )
+          ip++
         }
         break
       }
@@ -882,8 +1087,17 @@ function runCellProgram(cell: PlantCell, ctx: VMContext, maxActions: number): Ce
         attempted = true
         if (tryGrowMeristem(cell, dir, ctx, 'GROW')) {
           matureParentAfterOffspring(cell, ctx.plant.id)
+          logStep(op, arg, stackBefore, stack, 'GROW успешен — родитель созрел', {
+            structuralAttempt: true,
+            structuralSuccess: true,
+            runEnded: true,
+          })
           return { actions: actions + 1, matured: true, attempted }
         }
+        logStep(op, arg, stackBefore, stack, 'GROW не прошёл (нет места, воды или энергии)', {
+          structuralAttempt: true,
+          structuralSuccess: false,
+        })
         ip++
         break
       }
@@ -892,16 +1106,22 @@ function runCellProgram(cell: PlantCell, ctx: VMContext, maxActions: number): Ce
         if (tryGrowMeristem(cell, dir, ctx, 'BRANCH')) {
           cell.dir = dir
           cell.waitingForGrow = false
-          // Родитель остаётся меристемой — можно ответвиться ещё раз за тик
-          // (несколько боковых корней или побегов). Созревание только через GROW
-          // или когда ни одно правило не подошло.
           actions++
+          logStep(op, arg, stackBefore, stack, `BRANCH успешен (${actions}/${maxActions})`, {
+            structuralAttempt: true,
+            structuralSuccess: true,
+            runEnded: actions >= maxActions,
+          })
           if (actions >= maxActions) {
             return { actions, matured: false, attempted }
           }
           ip++
           break
         }
+        logStep(op, arg, stackBefore, stack, 'BRANCH не прошёл', {
+          structuralAttempt: true,
+          structuralSuccess: false,
+        })
         ip++
         break
       }
@@ -910,8 +1130,20 @@ function runCellProgram(cell: PlantCell, ctx: VMContext, maxActions: number): Ce
         const seedFrac = decodeLiteral(arg)
         if (dropSeed(cell, dir, ctx, seedFrac)) {
           cell.waitingForGrow = false
+          logStep(
+            op,
+            arg,
+            stackBefore,
+            stack,
+            `SEED успешен (доля ${seedFrac.toFixed(2)})`,
+            { structuralAttempt: true, structuralSuccess: true, runEnded: true },
+          )
           return { actions: actions + 1, matured: false, attempted }
         }
+        logStep(op, arg, stackBefore, stack, 'SEED не прошёл', {
+          structuralAttempt: true,
+          structuralSuccess: false,
+        })
         ip += 2
         break
       }
@@ -921,12 +1153,21 @@ function runCellProgram(cell: PlantCell, ctx: VMContext, maxActions: number): Ce
           cell.dir = dir
           cell.waitingForGrow = false
           actions++
+          logStep(op, arg, stackBefore, stack, `SPIKE успешен (${actions}/${maxActions})`, {
+            structuralAttempt: true,
+            structuralSuccess: true,
+            runEnded: actions >= maxActions,
+          })
           if (actions >= maxActions) {
             return { actions, matured: false, attempted }
           }
           ip++
           break
         }
+        logStep(op, arg, stackBefore, stack, 'SPIKE не прошёл', {
+          structuralAttempt: true,
+          structuralSuccess: false,
+        })
         ip++
         break
       }
@@ -934,8 +1175,17 @@ function runCellProgram(cell: PlantCell, ctx: VMContext, maxActions: number): Ce
         attempted = true
         if (shootSpike(cell, dir, ctx)) {
           cell.waitingForGrow = false
+          logStep(op, arg, stackBefore, stack, 'SHOOT успешен — шип и мерistema за ним', {
+            structuralAttempt: true,
+            structuralSuccess: true,
+            runEnded: true,
+          })
           return { actions: actions + 1, matured: false, attempted }
         }
+        logStep(op, arg, stackBefore, stack, 'SHOOT не прошёл', {
+          structuralAttempt: true,
+          structuralSuccess: false,
+        })
         ip++
         break
       }
@@ -974,6 +1224,170 @@ function processSproutGroup(
   }
 }
 
+function describeMeristemOutcome(
+  run: CellRun,
+  cellY: number,
+  actionsTaken: number,
+): string {
+  if (run.matured) return 'GROW — мерistema созрела в ткань'
+  if (actionsTaken > 0) return `Выполнено структурных действий: ${actionsTaken}`
+  if (run.attempted) return 'Структурное действие не прошло — ждёт (waitingForGrow)'
+  if (cellY < WORLD.SOIL_Y) return 'Ни одно правило не сработало — воздушная мерistema ждёт'
+  return 'Ни одно правило не сработало — созревает в ROOT/STEM'
+}
+
+function traceProcessSproutGroup(
+  cells: PlantCell[],
+  ctx: VMContext,
+  budget: number,
+  actionsRef: { used: number },
+  runs: MeristemRunTrace[],
+  occupancy: Int32Array[],
+  light: Float32Array,
+  minerals: Float32Array,
+  rng: Rng,
+): void {
+  for (const cell of cells) {
+    if (actionsRef.used >= budget) {
+      runs.push({
+        cellId: cell.id,
+        x: cell.x,
+        y: cell.y,
+        zone: cell.y >= WORLD.SOIL_Y ? 'soil' : 'air',
+        initialDir: cell.dir,
+        initialSensors: snapshotSensors(
+          ctx.plant,
+          cell,
+          cell.dir,
+          occupancy,
+          light,
+          minerals,
+          rng,
+        ),
+        steps: [
+          {
+            stepIndex: 0,
+            ip: -1,
+            opcode: 'NOP',
+            text: '—',
+            dir: cell.dir,
+            stackBefore: [],
+            stackAfter: [],
+            note: `Бюджет исчерпан (${actionsRef.used}/${budget}) — клетка ждёт`,
+          },
+        ],
+        actionsTaken: 0,
+        matured: false,
+        attempted: false,
+        outcome: 'Бюджет роста исчерпан — waitingForGrow',
+      })
+      continue
+    }
+    if (cell.type !== 'SPROUT') continue
+
+    const steps: VmStepTrace[] = []
+    const run = runCellProgram(cell, ctx, budget - actionsRef.used, steps)
+    actionsRef.used += run.actions
+
+    let outcome = describeMeristemOutcome(run, cell.y, run.actions)
+    if (run.actions === 0 && !run.attempted) {
+      if (cell.y < WORLD.SOIL_Y) {
+        outcome = 'Ни одно правило не сработало — воздушная мерistema ждёт'
+      } else {
+        outcome = 'Ни одно правило не сработало — созревает в ROOT/STEM'
+      }
+    }
+
+    runs.push({
+      cellId: cell.id,
+      x: cell.x,
+      y: cell.y,
+      zone: cell.y >= WORLD.SOIL_Y ? 'soil' : 'air',
+      initialDir: cell.dir,
+      initialSensors: snapshotSensors(
+        ctx.plant,
+        cell,
+        cell.dir,
+        occupancy,
+        light,
+        minerals,
+        rng,
+      ),
+      steps,
+      actionsTaken: run.actions,
+      matured: run.matured,
+      attempted: run.attempted,
+      outcome,
+    })
+  }
+}
+
+/** Прогон VM с полной трассировкой на клоне растения (не меняет исходное растение) */
+export function traceGrowthVM(
+  plant: Plant,
+  occupancy: Int32Array[],
+  light: Float32Array,
+  minerals: Float32Array,
+  rng: Rng,
+): GrowthVmTrace {
+  const traceRng = new Rng(0)
+  traceRng.setState(rng.getState())
+
+  const clone: Plant = {
+    ...plant,
+    genome: { code: Uint8Array.from(plant.genome.code) },
+    cells: plant.cells.map((c) => ({ ...c })),
+    edgeFlux: [],
+    accounting: { ...plant.accounting },
+  }
+
+  const occ = occupancy.map((row) => new Int32Array(row))
+  const newSeeds: { x: number; y: number; energy: number }[] = []
+  const ctx: VMContext = { plant: clone, occupancy: occ, light, minerals, rng: traceRng, newSeeds }
+
+  const sprouts = clone.cells.filter((c) => c.type === 'SPROUT')
+  const soilSprouts = sprouts
+    .filter((c) => c.y >= WORLD.SOIL_Y)
+    .sort((a, b) => a.y - b.y || a.id - b.id)
+  const airSprouts = sprouts
+    .filter((c) => c.y < WORLD.SOIL_Y)
+    .sort((a, b) => a.y - b.y || a.id - b.id)
+
+  const growActionBudget = plantGrowActionBudget(clone)
+  const rootBudget =
+    soilSprouts.length > 0
+      ? Math.max(1, Math.min(growActionBudget, Math.floor(growActionBudget * ROOT_GROW_BUDGET_FRAC)))
+      : 0
+
+  const runs: MeristemRunTrace[] = []
+  const actionsRef = { used: 0 }
+
+  traceProcessSproutGroup(
+    soilSprouts,
+    ctx,
+    rootBudget,
+    actionsRef,
+    runs,
+    occ,
+    light,
+    minerals,
+    traceRng,
+  )
+  traceProcessSproutGroup(
+    airSprouts,
+    ctx,
+    growActionBudget,
+    actionsRef,
+    runs,
+    occ,
+    light,
+    minerals,
+    traceRng,
+  )
+
+  return { growActionBudget, rootBudget, runs }
+}
+
 export function executeGrowthVM(
   plant: Plant,
   occupancy: Int32Array[],
@@ -990,7 +1404,7 @@ export function executeGrowthVM(
   const sprouts = plant.cells.filter((c) => c.type === 'SPROUT')
   const soilSprouts = sprouts
     .filter((c) => c.y >= WORLD.SOIL_Y)
-    .sort((a, b) => b.y - a.y || a.id - b.id)
+    .sort((a, b) => a.y - b.y || a.id - b.id)
   const airSprouts = sprouts
     .filter((c) => c.y < WORLD.SOIL_Y)
     .sort((a, b) => a.y - b.y || a.id - b.id)
@@ -1003,7 +1417,7 @@ export function executeGrowthVM(
       : 0
 
   const actionsRef = { used: 0 }
-  // Сначала корни — им раньше не хватало бюджета после кроны
+  // Почвенные мерistemы: сначала поверхность (побег вверх), затем глубокие корни
   processSproutGroup(soilSprouts, ctx, rootBudget, actionsRef)
   processSproutGroup(airSprouts, ctx, budget, actionsRef)
 

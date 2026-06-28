@@ -7,7 +7,7 @@ import {
   totalSoilEnergy,
   uptakeMinerals,
 } from './environment'
-import { genomeHue, mutate, randomGenome, deserializeGenome, cloneGenome } from './genome'
+import { genomeHue, mutate, randomGenome, fullyRandomGenome, deserializeGenome, cloneGenome } from './genome'
 import {
   agePlant,
   applyIncomeAndUpkeep,
@@ -65,6 +65,8 @@ export class World {
   light: Float32Array
   occupancy: Int32Array[]
   selectedPlantId: number | null = null
+  /** true после «Рестарт случайный» — новый сид и случайные стартовые геномы */
+  lastRestartUsedRandomGenomes = false
   /** Если задан — собираем tickEvents только для этого растения (режим TRACE) */
   tracePlantId: number | null = null
   /** События последнего тика (для режима трассировки) */
@@ -201,7 +203,7 @@ export class World {
     this.fallingSeeds = stillFalling
   }
 
-  seedInitialPlants(count: number): void {
+  seedInitialPlants(count: number, randomGenomes = false): void {
     const usedX = new Set<number>()
     for (let i = 0; i < count; i++) {
       let x = this.rng.nextInt(2, WORLD.W - 3)
@@ -214,7 +216,7 @@ export class World {
       }
       usedX.add(x)
       const y = this.findSpawnY(x)
-      const genome = randomGenome(this.rng)
+      const genome = randomGenomes ? fullyRandomGenome(this.rng) : randomGenome(this.rng)
       const plant = createPlant(genome, x, y, genomeHue(genome), 12, this.rng.nextInt(0, 15))
       this.plants.push(plant)
       this.occupancy[y][x] = plant.id
@@ -565,10 +567,11 @@ export class World {
     this.rebuildLight()
   }
 
-  restart(seed?: number): void {
+  restart(seed?: number, randomGenomes = false): void {
     if (seed != null) {
       this.rng.reseed(seed)
     }
+    this.lastRestartUsedRandomGenomes = randomGenomes
     this.mode = 'EVOLUTION'
     this.tickCount = 0
     this.plants = []
@@ -578,7 +581,7 @@ export class World {
     this.minerals = initMinerals()
     this.occupancy = Array.from({ length: WORLD.H }, () => new Int32Array(WORLD.W))
     resetIdCounters()
-    this.seedInitialPlants(INITIAL_PLANTS)
+    this.seedInitialPlants(INITIAL_PLANTS, randomGenomes)
     this.rebuildLight()
   }
 
@@ -616,6 +619,14 @@ export class World {
     this.occupancy = Array.from({ length: WORLD.H }, () => new Int32Array(WORLD.W))
     resetIdCounters()
     this.rebuildLight()
+  }
+
+  /** Нет живых растений, семян в почве и падающих семян */
+  isEcologyEmpty(): boolean {
+    if (this.plants.some((p) => !p.dead)) return false
+    if (this.seeds.length > 0) return false
+    if (this.fallingSeeds.length > 0) return false
+    return true
   }
 
   stats(): WorldStats {

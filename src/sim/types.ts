@@ -107,8 +107,8 @@ export interface WorldStats {
 
 export type ViewMode = 'PLANTS' | 'ENERGY' | 'FLOWS' | 'ANATOMY' | 'TRACE'
 
-/** Режим приложения: эволюция популяции или изолированный опыт */
-export type AppMode = 'EVOLUTION' | 'LABORATORY'
+/** Режим приложения: эволюция, лаборатория или исследование генома */
+export type AppMode = 'EVOLUTION' | 'LABORATORY' | 'GENOME_EXPLORER'
 
 export interface FallingSeed {
   x: number

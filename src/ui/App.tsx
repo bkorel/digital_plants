@@ -1,9 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { cloneGenome, deserializeGenome, serializeGenome, spikeShooterTemplateGenome, shyPlantTemplateGenome, SPIKE_SHOOTER_PRESET_ID, SHY_PLANT_PRESET_ID } from '../sim/genome'
 import { WORLD } from '../sim/config'
+import {
+  recordRafBatch,
+  recordTick,
+  recordWorldMeta,
+  startPerfProbe,
+} from '../dev/perfProbe'
 import type { AppMode, EvolutionSnapshot, Genome, SavedGenome, ViewMode } from '../sim/types'
 import { World } from '../sim/world'
 import Controls from './Controls'
+import GenomeExplorerScreen from './GenomeExplorerScreen'
 import GenomePanel from './GenomePanel'
 import LaboratoryPanel from './LaboratoryPanel'
 import SimulationBar from './SimulationBar'
@@ -88,6 +95,9 @@ export default function App() {
   )
   const [plantPreviewX, setPlantPreviewX] = useState(Math.floor(WORLD.W / 2))
   const [selectedPlantId, setSelectedPlantId] = useState<number | null>(null)
+  const [explorerReturnMode, setExplorerReturnMode] = useState<AppMode>('EVOLUTION')
+  const [autoRandomRestartOnExtinction, setAutoRandomRestartOnExtinction] = useState(false)
+  const autoRandomRestartRef = useRef(false)
   const speedAccumRef = useRef(0)
   const [renderTick, setRenderTick] = useState(0)
 
@@ -95,15 +105,42 @@ export default function App() {
     setRenderTick((n) => n + 1)
   }, [])
 
+  const performRandomRestart = useCallback(() => {
+    if (appMode !== 'EVOLUTION') return
+    const newSeed = Math.floor(Math.random() * 999_999) + 1
+    evolutionSnapshotRef.current = null
+    setSeed(newSeed)
+    worldRef.current?.restart(newSeed, true)
+    setSelectedPlantId(null)
+    setPaused(false)
+    setViewMode('PLANTS')
+    refresh()
+  }, [appMode, refresh])
+
+  const tryAutoRandomRestart = useCallback(
+    (w: World) => {
+      if (!autoRandomRestartRef.current) return
+      if (w.mode !== 'EVOLUTION') return
+      if (!w.isEcologyEmpty()) return
+      performRandomRestart()
+    },
+    [performRandomRestart],
+  )
+
   useEffect(() => {
     const w = new World(seed)
     worldRef.current = w
     setWorld(w)
+    startPerfProbe()
   }, [])
 
   useEffect(() => {
     saveCollection(collection)
   }, [collection])
+
+  useEffect(() => {
+    autoRandomRestartRef.current = autoRandomRestartOnExtinction
+  }, [autoRandomRestartOnExtinction])
 
   useEffect(() => {
     speedAccumRef.current = 0
@@ -121,21 +158,26 @@ export default function App() {
     const tickBudgetMs = 14
     const loop = () => {
       const w = worldRef.current
-      if (w && !paused) {
+      if (w && !paused && appMode !== 'GENOME_EXPLORER') {
+        const rafT0 = performance.now()
         const tickBefore = w.tickCount
         const deadline = performance.now() + tickBudgetMs
         while (performance.now() < deadline) {
           if (speed >= 1) {
             const batch = Math.floor(speed)
             for (let i = 0; i < batch; i++) {
+              const tickT0 = performance.now()
               w.tick()
+              recordTick(performance.now() - tickT0)
               if (performance.now() >= deadline) break
             }
           } else {
             speedAccumRef.current += speed
             if (speedAccumRef.current < 1) break
             while (speedAccumRef.current >= 1 && performance.now() < deadline) {
+              const tickT0 = performance.now()
               w.tick()
+              recordTick(performance.now() - tickT0)
               speedAccumRef.current -= 1
             }
           }
@@ -143,6 +185,17 @@ export default function App() {
           if (speed < 1 && speedAccumRef.current < 1) break
         }
         if (w.tickCount !== tickBefore) {
+          const tickDelta = w.tickCount - tickBefore
+          recordRafBatch(performance.now() - rafT0, tickDelta)
+          let cells = 0
+          let alive = 0
+          for (const p of w.plants) {
+            if (p.dead) continue
+            alive++
+            cells += p.cells.length
+          }
+          recordWorldMeta(w.tickCount, alive, cells)
+          tryAutoRandomRestart(w)
           refresh()
         }
       }
@@ -150,7 +203,7 @@ export default function App() {
     }
     frame = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(frame)
-  }, [paused, speed, refresh])
+  }, [paused, speed, refresh, appMode, tryAutoRandomRestart])
 
   useEffect(() => {
     if (selectedPlantId == null || !world) return
@@ -159,9 +212,12 @@ export default function App() {
   }, [world?.tickCount, selectedPlantId, world])
 
   const handleStep = useCallback(() => {
-    worldRef.current?.tick()
+    const w = worldRef.current
+    if (!w) return
+    w.tick()
+    tryAutoRandomRestart(w)
     refresh()
-  }, [refresh])
+  }, [refresh, tryAutoRandomRestart])
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -194,6 +250,10 @@ export default function App() {
       setSelectedPlantId(null)
     }
     refresh()
+  }
+
+  const handleRandomRestart = () => {
+    performRandomRestart()
   }
 
   const handleSeedChange = (newSeed: number) => {
@@ -341,6 +401,21 @@ export default function App() {
     refresh()
   }
 
+  const handleExitGenomeExplorer = () => {
+    setAppMode(explorerReturnMode === 'LABORATORY' ? 'LABORATORY' : 'EVOLUTION')
+    refresh()
+  }
+
+  const handleEnterGenomeExplorer = (plantId?: number | null) => {
+    if (appMode !== 'GENOME_EXPLORER') {
+      setExplorerReturnMode(appMode === 'LABORATORY' ? 'LABORATORY' : 'EVOLUTION')
+    }
+    if (plantId != null) setSelectedPlantId(plantId)
+    setAppMode('GENOME_EXPLORER')
+    setPaused(true)
+    refresh()
+  }
+
   const handleExitLaboratory = () => {
     setAppMode('EVOLUTION')
     setLabSpecimen(null)
@@ -393,8 +468,15 @@ export default function App() {
       : undefined
   const labPlantAlive = world.plants.some((p) => !p.dead)
 
+  const explorerPlant =
+    selectedPlantId != null
+      ? world.plants.find((p) => p.id === selectedPlantId && !p.dead)
+      : undefined
+
   return (
-    <div className={`app${appMode === 'LABORATORY' ? ' app--laboratory' : ''}`}>
+    <div
+      className={`app${appMode === 'LABORATORY' ? ' app--laboratory' : ''}${appMode === 'GENOME_EXPLORER' ? ' app--genome-explorer' : ''}`}
+    >
       <header className="app-header">
         <h1>Digital Plants Evolution</h1>
         <div className="app-mode-switch">
@@ -402,7 +484,8 @@ export default function App() {
             type="button"
             className={appMode === 'EVOLUTION' ? 'active' : ''}
             onClick={() => {
-              if (appMode === 'LABORATORY') handleExitLaboratory()
+              if (appMode === 'GENOME_EXPLORER') handleExitGenomeExplorer()
+              else if (appMode === 'LABORATORY') handleExitLaboratory()
             }}
           >
             Эволюция
@@ -410,13 +493,36 @@ export default function App() {
           <button
             type="button"
             className={appMode === 'LABORATORY' ? 'active' : ''}
-            onClick={() => enterLaboratory()}
+            onClick={() => {
+              if (appMode === 'GENOME_EXPLORER') handleExitGenomeExplorer()
+              if (appMode !== 'LABORATORY') enterLaboratory()
+            }}
           >
             Лаборатория
+          </button>
+          <button
+            type="button"
+            className={appMode === 'GENOME_EXPLORER' ? 'active' : ''}
+            onClick={() => handleEnterGenomeExplorer(selectedPlantId)}
+          >
+            Исследование генома
           </button>
         </div>
       </header>
 
+      {appMode === 'GENOME_EXPLORER' ? (
+        <GenomeExplorerScreen
+          world={world}
+          plant={explorerPlant ?? selectedPlant}
+          tick={world.tickCount}
+          onBack={handleExitGenomeExplorer}
+          onSelectPlant={(id) => {
+            setSelectedPlantId(id)
+            refresh()
+          }}
+        />
+      ) : (
+        <>
       <div className="world-column">
         <WorldCanvas
           world={world}
@@ -427,6 +533,7 @@ export default function App() {
           appMode={appMode}
           onSelectPlant={handleSelectPlant}
           onTakeToLaboratory={handleTakeToLaboratory}
+          onExploreGenome={handleEnterGenomeExplorer}
           plantPlacementActive={plantPlacement != null}
           plantPreviewX={plantPreviewX}
           onPlantPreviewMove={setPlantPreviewX}
@@ -437,9 +544,12 @@ export default function App() {
           paused={paused}
           speed={speed}
           appMode={appMode}
+          autoRandomRestartOnExtinction={autoRandomRestartOnExtinction}
           onPauseToggle={() => setPaused((p) => !p)}
           onStep={handleStep}
           onRestart={handleRestart}
+          onRandomRestart={handleRandomRestart}
+          onAutoRandomRestartChange={setAutoRandomRestartOnExtinction}
           onSpeedChange={setSpeed}
         />
       </div>
@@ -464,6 +574,7 @@ export default function App() {
           viewMode={viewMode}
           seed={seed}
           appMode={appMode}
+          lastRestartRandomGenomes={world.lastRestartUsedRandomGenomes}
           onViewModeChange={setViewMode}
           onSeedChange={handleSeedChange}
         />
@@ -482,8 +593,11 @@ export default function App() {
           onRemoveFromCollection={handleRemoveFromCollection}
           onPlantFromCollection={handlePlantGenome}
           onPlantFromPaste={handlePlantPaste}
+          onExploreGenome={() => handleEnterGenomeExplorer(selectedPlantId)}
         />
       </aside>
+        </>
+      )}
     </div>
   )
 }
