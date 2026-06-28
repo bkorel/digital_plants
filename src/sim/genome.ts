@@ -18,7 +18,7 @@ import { Rng } from './rng'
  * BRANCH/SPIKE/SHOOT) берутся из следующих байт. Структурные команды —
  * ACTION(WHERE, WHEN): WHERE задаёт направление (или GOTO), WHEN — порог
  * встроенного IF (вершина стека ≥ decodeLiteral(WHEN)). `DIR` — только для
- * GROW/SEED (WHERE) и сенсоров по DIR.
+ * GROW/SEED (WHERE) и сенсоров по DIR — относительно ориентации клетки; SEED — абсолютный мир.
  * Поэтому ЛЮБАЯ случайная
  * последовательность байт — корректная программа, а мутации никогда не ломают
  * структуру (нет указателей, которые надо чинить).
@@ -442,8 +442,8 @@ function viableTemplateGenome(rng: Rng): Genome {
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.03), OP('LT'),
     OP('AND'),
     OP('GROW'), WHEN(0.5),
-    // главный корень вниз
-    OP('DIR'), DIRB('DOWN'),
+    // главный корень вниз (вперёд для dir=DOWN)
+    OP('DIR'), DIRB('UP'),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.01), OP('LT'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.04), OP('GT'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(depthThr), OP('LT'),
@@ -455,12 +455,12 @@ function viableTemplateGenome(rng: Rng): Genome {
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.05), OP('GT'),
     OP('SENSE'), SENS('RANDOM'), OP('PUSH'), LIT(rootBranchP), OP('LT'),
     OP('AND'), OP('AND'),
-    OP('BRANCH'), SD('LEFT'), WHEN(0.5),
+    OP('BRANCH'), SD('RIGHT'), WHEN(0.5),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.01), OP('LT'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.05), OP('GT'),
     OP('SENSE'), SENS('RANDOM'), OP('PUSH'), LIT(rootBranchP), OP('LT'),
     OP('AND'), OP('AND'),
-    OP('BRANCH'), SD('RIGHT'), WHEN(0.5),
+    OP('BRANCH'), SD('LEFT'), WHEN(0.5),
     // семя — до продолжения роста вверх (иначе GROW съедает прогон каждый тик)
     OP('DIR'), DIRB('UP'),
     OP('SENSE'), SENS('ENERGY'), OP('PUSH'), LIT(seedEnergyThr), OP('GT'),
@@ -517,13 +517,13 @@ function viableTemplateGenome(rng: Rng): Genome {
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.68), OP('LT'),
     OP('SENSE'), SENS('RANDOM'), OP('PUSH'), LIT(rootBranchDeepP), OP('LT'),
     OP('AND'), OP('AND'), OP('AND'),
-    OP('BRANCH'), SD('LEFT'), WHEN(0.5),
+    OP('BRANCH'), SD('RIGHT'), WHEN(0.5),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.01), OP('LT'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.14), OP('GT'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.68), OP('LT'),
     OP('SENSE'), SENS('RANDOM'), OP('PUSH'), LIT(rootBranchDeepP), OP('LT'),
     OP('AND'), OP('AND'), OP('AND'),
-    OP('BRANCH'), SD('RIGHT'), WHEN(0.5),
+    OP('BRANCH'), SD('LEFT'), WHEN(0.5),
     ...metaSuffix({ doubleGrow: rng.chance(0.28), shade: 'lignify' }),
   ])
 
@@ -542,7 +542,7 @@ export function spikeShooterTemplateGenome(_rng?: Rng): Genome {
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.04), OP('LT'),
     OP('AND'),
     OP('BRANCH'), SD('DOWN'), WHEN(0.5),
-    OP('DIR'), DIRB('DOWN'),
+    OP('DIR'), DIRB('UP'),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.01), OP('LT'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.04), OP('GT'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.7), OP('LT'),
@@ -585,7 +585,7 @@ export function spikeShooterTemplateGenome(_rng?: Rng): Genome {
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.1), OP('GT'),
     OP('SENSE'), SENS('RANDOM'), OP('PUSH'), LIT(0.35), OP('LT'),
     OP('AND'), OP('AND'),
-    OP('BRANCH'), SD('DOWN'), WHEN(0.5),
+    OP('BRANCH'), SD('UP'), WHEN(0.5),
     ...metaSuffix({ doubleGrow: true, shade: 'mineralize' }),
   ])
 
@@ -594,7 +594,7 @@ export function spikeShooterTemplateGenome(_rng?: Rng): Genome {
 
 /**
  * Не тянется вверх/в стороны, если в соседней клетке (LEFT/RIGHT/UP по DIR) чужое растение.
- * Сенсор FOREIGN читает клетку в направлении последнего DIR.
+ * Сенсор FOREIGN читает клетку в направлении последнего DIR (относительно ориентации клетки).
  */
 export function shyPlantTemplateGenome(_rng?: Rng): Genome {
   const code: number[] = asm([
@@ -602,7 +602,7 @@ export function shyPlantTemplateGenome(_rng?: Rng): Genome {
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.04), OP('LT'),
     OP('AND'),
     OP('BRANCH'), SD('DOWN'), WHEN(0.5),
-    OP('DIR'), DIRB('DOWN'),
+    OP('DIR'), DIRB('UP'),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.01), OP('LT'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.04), OP('GT'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.65), OP('LT'),
