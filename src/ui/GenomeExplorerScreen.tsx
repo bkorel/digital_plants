@@ -210,13 +210,15 @@ export default function GenomeExplorerScreen({
           <div className="genome-explorer__legend-body">
             <p>
               Программа читается <strong>сверху вниз</strong>. Сначала на стек кладутся сенсоры и
-              сравнения; структурные команды — <code>ACTION(WHERE, WHEN)</code>: WHERE — направление,
-              WHEN — условие (стек ≥ порог, или «prev ok / prev fail»).
+              сравнения; структурные команды — <code>ACTION(WHERE, WHEN)</code>: WHERE — направление
+              <strong>относительно ориентации клетки</strong> (UP = вперёд, DOWN = назад),
+              WHEN — условие (стек ≥ порог, или «prev ok / prev fail»).{' '}
+              <code>SEED</code> — абсолютное направление в мире.
             </p>
             <ul>
               <li>
-                <code>DIR</code> — WHERE для <code>GROW</code>/<code>SEED</code> и сенсоров по
-                направлению
+                <code>DIR</code> — символ для <code>GROW</code> и сенсоров (относительно{' '}
+                <code>cell.dir</code>)
               </li>
               <li>
                 <code>GROW / BRANCH / SEED / SPIKE / SHOOT</code> — действия; зелёные строки в

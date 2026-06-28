@@ -161,7 +161,6 @@ export default function App() {
     syncWorkerRestartRef.current(newSeed, true)
     setSelectedPlantId(null)
     setPaused(false)
-    setViewMode('PLANTS')
     refresh()
   }, [appMode, refresh])
 

@@ -20,17 +20,17 @@ export function opHelp(op: OpName): string {
     case 'IF':
       return 'Если вершина стека < 0.5 — пропускает следующую инструкцию (с аргументом). Иначе продолжает.'
     case 'DIR':
-      return 'Задаёт WHERE для GROW/SEED и сенсоров по DIR (FOREIGN, SHADE_DIR, MINERAL_DIR).'
+      return 'Символ направления для GROW и сенсоров по DIR. Интерпретация относительно ориентации клетки (SEED — абсолютный мир).'
     case 'GROW':
-      return 'ACTION(WHERE, WHEN): WHERE — последний DIR; WHEN — порог IF (стек ≥ значение). Созревает родителя.'
+      return 'ACTION(WHERE, WHEN): WHERE — последний DIR относительно cell.dir; WHEN — порог IF. Созревает родителя.'
     case 'BRANCH':
-      return 'ACTION(WHERE, WHEN): WHERE — байт %8 (0–1 UP, 2 DOWN, 3–4 LEFT, 5–6 RIGHT, 7 GOTO); WHEN — порог IF.'
+      return 'ACTION(WHERE, WHEN): WHERE относительно cell.dir (UP=вперёд, DOWN=назад, LEFT/RIGHT=±90°); WHEN — порог IF.'
     case 'SEED':
-      return 'ACTION(WHERE, WHEN): WHERE — DIR; арг1 — доля семени; arg2 WHEN — порог IF.'
+      return 'ACTION(WHERE, WHEN): WHERE — последний DIR в абсолютных координатах мира; arg1 — доля семени; WHEN — порог IF.'
     case 'SPIKE':
-      return 'ACTION(WHERE, WHEN): шип в соседней клетке; WHERE и WHEN как у BRANCH.'
+      return 'ACTION(WHERE, WHEN): шип в соседней клетке; WHERE относительно cell.dir.'
     case 'SHOOT':
-      return 'ACTION(WHERE, WHEN): луч от шипа по направлению; попадание только в чужой побег или слабый ствол. Завершает прогон.'
+      return 'ACTION(WHERE, WHEN): луч от шипа; WHERE относительно spike.dir. Завершает прогон.'
   }
 }
 
@@ -54,13 +54,13 @@ export function sensorHelp(sensor: SensorName): string {
     case 'RANDOM':
       return 'Случайное значение 0..1 от генератора мира (для вероятностных веток).'
     case 'FOREIGN':
-      return '1 — в клетке по текущему DIR чужое растение или семя; 0 — свободно или своя клетка.'
+      return '1 — в клетке по DIR (относительно ориентации) чужое растение или семя; 0 — свободно или своя клетка.'
     case 'SHADE':
       return 'Уровень затенения в текущей клетке (0 — светло, 1 — глубокая тень).'
     case 'SHADE_DIR':
-      return 'Затенение в соседней клетке по текущему DIR.'
+      return 'Затенение в соседней клетке по DIR (относительно ориентации).'
     case 'MINERAL_DIR':
-      return 'Минералы почвы в клетке по DIR (0, если там воздух).'
+      return 'Минералы почвы в клетке по DIR (относительно; 0, если там воздух).'
     case 'CROWD_ABOVE':
       return 'Доля чужих растений на 1 клетку выше в полосе ±5 по X.'
     case 'PREV_OK':
@@ -71,14 +71,14 @@ export function sensorHelp(sensor: SensorName): string {
 }
 
 const DIR_RU: Record<string, string> = {
-  UP: '↑ вверх',
-  DOWN: '↓ вниз',
-  LEFT: '← влево',
-  RIGHT: '→ вправо',
-  UP_LEFT: '↖ вверх-влево',
-  UP_RIGHT: '↗ вверх-вправо',
-  DOWN_LEFT: '↙ вниз-влево',
-  DOWN_RIGHT: '↘ вниз-вправо',
+  UP: '↑ вперёд',
+  DOWN: '↓ назад',
+  LEFT: '↺ влево (90°)',
+  RIGHT: '↻ вправо (90°)',
+  UP_LEFT: '↖ вперёд-влево',
+  UP_RIGHT: '↗ вперёд-вправо',
+  DOWN_LEFT: '↙ назад-влево',
+  DOWN_RIGHT: '↘ назад-вправо',
 }
 
 function whenHuman(whenPart: string): string {
@@ -92,10 +92,10 @@ function whenHuman(whenPart: string): string {
 }
 
 function whereHuman(wherePart: string): string {
-  if (wherePart === 'UP') return '↑'
-  if (wherePart === 'DOWN') return '↓'
-  if (wherePart === 'LEFT') return '←'
-  if (wherePart === 'RIGHT') return '→'
+  if (wherePart === 'UP') return '↑ вперёд'
+  if (wherePart === 'DOWN') return '↓ назад'
+  if (wherePart === 'LEFT') return '↺ влево'
+  if (wherePart === 'RIGHT') return '↻ вправо'
   if (wherePart.startsWith('GOTO +')) return `перейти на ip+${wherePart.slice(6)}`
   return wherePart
 }

@@ -2,7 +2,6 @@ import {
   CAP,
   DEATH_ENERGY_RETURN,
   DOUBLE_GROW_COST_MULT,
-  GROW_COST,
   GROW_ENERGY_RESERVE_TICKS,
   GROW_MIN_ENERGY_RESERVE,
   MAINTAIN,
@@ -83,20 +82,9 @@ export function setIdCounters(plantId: number, cellId: number): void {
   nextCellId = cellId
 }
 
-const DIR_DELTA: Record<Direction, { dx: number; dy: number }> = {
-  UP: { dx: 0, dy: -1 },
-  DOWN: { dx: 0, dy: 1 },
-  LEFT: { dx: -1, dy: 0 },
-  RIGHT: { dx: 1, dy: 0 },
-  UP_LEFT: { dx: -1, dy: -1 },
-  UP_RIGHT: { dx: 1, dy: -1 },
-  DOWN_LEFT: { dx: -1, dy: 1 },
-  DOWN_RIGHT: { dx: 1, dy: 1 },
-}
+import { DIR_DELTA, growCostRelative, resolveRelativeDir } from './direction'
 
-export function directionDelta(dir: Direction): { dx: number; dy: number } {
-  return DIR_DELTA[dir]
-}
+export { directionDelta } from './direction'
 
 export function createPlant(
   genome: Genome,
@@ -286,7 +274,8 @@ export function readSensorValue(
     case 'RANDOM':
       return rng.next()
     case 'FOREIGN': {
-      const { dx, dy } = DIR_DELTA[dir]
+      const world = resolveRelativeDir(cell.dir, dir)
+      const { dx, dy } = DIR_DELTA[world]
       const nx = offsetX(cell.x, dx)
       const ny = cell.y + dy
       if (!isYInBounds(ny)) return 1
@@ -297,14 +286,16 @@ export function readSensorValue(
     case 'SHADE':
       return normalizedShadeLevel(occupancy, cell.x, cell.y)
     case 'SHADE_DIR': {
-      const { dx, dy } = DIR_DELTA[dir]
+      const world = resolveRelativeDir(cell.dir, dir)
+      const { dx, dy } = DIR_DELTA[world]
       const nx = offsetX(cell.x, dx)
       const ny = cell.y + dy
       if (!isYInBounds(ny)) return 1
       return normalizedShadeLevel(occupancy, nx, ny)
     }
     case 'MINERAL_DIR': {
-      const { dx, dy } = DIR_DELTA[dir]
+      const world = resolveRelativeDir(cell.dir, dir)
+      const { dx, dy } = DIR_DELTA[world]
       const nx = offsetX(cell.x, dx)
       const ny = cell.y + dy
       if (!isYInBounds(ny) || ny < WORLD.SOIL_Y) return 0
@@ -461,13 +452,6 @@ function clearOccupancy(occupancy: Int32Array[], cell: PlantCell): void {
 export interface GrowthResult {
   newSeeds: { x: number; y: number; energy: number }[]
   shootDeposits: MineralDeposit[]
-}
-
-function growCost(dir: Direction): number {
-  if (dir === 'UP') return GROW_COST * 0.7
-  if (dir === 'DOWN') return GROW_COST * 1.0
-  if (dir.includes('_')) return GROW_COST * 1.05
-  return GROW_COST * 0.85
 }
 
 /** Есть ли в почве опора ниже точки роста (корень/клетка глубже) */
@@ -631,25 +615,30 @@ interface VMContext {
   shootDeposits: MineralDeposit[]
 }
 
-/** Создать дочернюю клетку-меристему в направлении dir. true — если получилось. */
+function growCost(relative: Direction): number {
+  return growCostRelative(relative)
+}
+
+/** Создать дочернюю клетку-меристему в мировом направлении worldDir. */
 function spawnMeristem(
   cell: PlantCell,
-  dir: Direction,
+  worldDir: Direction,
+  relativeDir: Direction,
   ctx: VMContext,
   growKind: 'GROW' | 'BRANCH',
 ): boolean {
   const { plant, occupancy } = ctx
   if (plantWaterSupply(plant) < MIN_WATER_FOR_GROW) return false
 
-  const { dx, dy } = DIR_DELTA[dir]
+  const { dx, dy } = DIR_DELTA[worldDir]
   const nx = offsetX(cell.x, dx)
   const ny = cell.y + dy
-  if (!canPlace(occupancy, plant.id, nx, ny, dir)) return false
+  if (!canPlace(occupancy, plant.id, nx, ny, worldDir)) return false
 
   // Рост в воздух разрешён только если в почве есть опора (корень глубже точки роста)
   if (ny < WORLD.SOIL_Y && !canGrowIntoAir(plant, cell.y)) return false
 
-  const cost = growCost(dir)
+  const cost = growCost(relativeDir)
   if (cell.cellEnergy < cost) return false
 
   cell.cellEnergy -= cost
@@ -658,8 +647,8 @@ function spawnMeristem(
     x: nx,
     y: ny,
     type: 'SPROUT',
-    dir,
-    cellEnergy: dir === 'DOWN' ? 3.5 : 1.0,
+    dir: worldDir,
+    cellEnergy: worldDir === 'DOWN' ? 3.5 : 1.0,
     age: 0,
     waitingForGrow: false,
   }
@@ -689,11 +678,16 @@ function canGrowAt(
 }
 
 /** GROW на 2 клетки: промежуточный сегмент созревает, на конце — новая мерistema. */
-function spawnDoubleGrow(cell: PlantCell, dir: Direction, ctx: VMContext): boolean {
+function spawnDoubleGrow(
+  cell: PlantCell,
+  worldDir: Direction,
+  relativeDir: Direction,
+  ctx: VMContext,
+): boolean {
   const { plant, occupancy } = ctx
   if (plantWaterSupply(plant) < MIN_WATER_FOR_GROW) return false
 
-  const { dx, dy } = DIR_DELTA[dir]
+  const { dx, dy } = DIR_DELTA[worldDir]
   const nx = offsetX(cell.x, dx)
   const ny = cell.y + dy
   const nx2 = offsetX(cell.x, dx * 2)
@@ -702,7 +696,7 @@ function spawnDoubleGrow(cell: PlantCell, dir: Direction, ctx: VMContext): boole
   if (!canGrowAt(plant, occupancy, cell.y, nx, ny)) return false
   if (!canGrowAt(plant, occupancy, cell.y, nx2, ny2)) return false
 
-  const cost = growCost(dir) * DOUBLE_GROW_COST_MULT
+  const cost = growCost(relativeDir) * DOUBLE_GROW_COST_MULT
   if (cell.cellEnergy < cost) return false
 
   cell.cellEnergy -= cost
@@ -712,8 +706,8 @@ function spawnDoubleGrow(cell: PlantCell, dir: Direction, ctx: VMContext): boole
     x: nx,
     y: ny,
     type: midKind,
-    dir,
-    cellEnergy: dir === 'DOWN' ? 2.5 : 0.6,
+    dir: worldDir,
+    cellEnergy: worldDir === 'DOWN' ? 2.5 : 0.6,
     age: 0,
     waitingForGrow: false,
   }
@@ -726,8 +720,8 @@ function spawnDoubleGrow(cell: PlantCell, dir: Direction, ctx: VMContext): boole
     x: nx2,
     y: ny2,
     type: 'SPROUT',
-    dir,
-    cellEnergy: dir === 'DOWN' ? 3.5 : 1.0,
+    dir: worldDir,
+    cellEnergy: worldDir === 'DOWN' ? 3.5 : 1.0,
     age: 0,
     waitingForGrow: false,
   }
@@ -746,17 +740,21 @@ function spawnDoubleGrow(cell: PlantCell, dir: Direction, ctx: VMContext): boole
 
 function tryGrowMeristem(
   cell: PlantCell,
-  dir: Direction,
+  worldDir: Direction,
+  relativeDir: Direction,
   ctx: VMContext,
   growKind: 'GROW' | 'BRANCH',
 ): boolean {
   if (growKind === 'GROW' && genomeDoubleGrowth(ctx.plant.genome)) {
-    const unit = growCost(dir)
-    if (cell.cellEnergy >= unit * DOUBLE_GROW_COST_MULT && spawnDoubleGrow(cell, dir, ctx)) {
+    const unit = growCost(relativeDir)
+    if (
+      cell.cellEnergy >= unit * DOUBLE_GROW_COST_MULT &&
+      spawnDoubleGrow(cell, worldDir, relativeDir, ctx)
+    ) {
       return true
     }
   }
-  return spawnMeristem(cell, dir, ctx, growKind)
+  return spawnMeristem(cell, worldDir, relativeDir, ctx, growKind)
 }
 
 /** null — успех; иначе текст причины отказа (для трассировки VM). */
@@ -955,19 +953,21 @@ function raycastShootTarget(
   return null
 }
 
-function shootSpike(cell: PlantCell, dir: Direction, ctx: VMContext): boolean {
+function shootSpike(cell: PlantCell, whereRel: Direction, ctx: VMContext): boolean {
   const { plant, occupancy, plants, shootDeposits } = ctx
   if (cell.cellEnergy < SHOOT_COST) return false
   if (cell.y >= WORLD.SOIL_Y - 1) return false
 
-  const { dx, dy } = DIR_DELTA[dir]
+  const placementWorld = resolveRelativeDir(cell.dir, whereRel)
+  const { dx, dy } = DIR_DELTA[placementWorld]
   const sx = offsetX(cell.x, dx)
   const sy = cell.y + dy
   if (!isYInBounds(sy) || sy >= WORLD.SOIL_Y) return false
 
   const existingSpike = getCellAt(plant, sx, sy)
   const hasSpike = existingSpike?.type === 'SPIKE'
-  const canCreateSpike = !existingSpike && canPlace(occupancy, plant.id, sx, sy, dir)
+  const canCreateSpike =
+    !existingSpike && canPlace(occupancy, plant.id, sx, sy, placementWorld)
   if (!hasSpike && !canCreateSpike) return false
 
   const plantById = new Map<number, Plant>()
@@ -975,28 +975,32 @@ function shootSpike(cell: PlantCell, dir: Direction, ctx: VMContext): boolean {
     if (!p.dead) plantById.set(p.id, p)
   }
 
-  const range = genomeShootRange(plant.genome)
-  const hit = raycastShootTarget(sx, sy, dir, plant.id, range, plantById, occupancy)
-  if (!hit) return false
-
-  cell.cellEnergy -= SHOOT_COST
   let spike: PlantCell
   if (hasSpike && existingSpike) {
     spike = existingSpike
-    spike.cellEnergy = Math.min(CAP.SPIKE, spike.cellEnergy + SHOOT_COST * 0.35)
   } else {
     spike = {
       id: nextCellId++,
       x: sx,
       y: sy,
       type: 'SPIKE',
-      dir,
+      dir: placementWorld,
       cellEnergy: SHOOT_COST * 0.4,
       age: 0,
       waitingForGrow: false,
     }
     plant.cells.push(spike)
     setOccupancy(occupancy, plant.id, spike)
+  }
+
+  const rayWorld = resolveRelativeDir(spike.dir, whereRel)
+  const range = genomeShootRange(plant.genome)
+  const hit = raycastShootTarget(sx, sy, rayWorld, plant.id, range, plantById, occupancy)
+  if (!hit) return false
+
+  cell.cellEnergy -= SHOOT_COST
+  if (hasSpike) {
+    spike.cellEnergy = Math.min(CAP.SPIKE, spike.cellEnergy + SHOOT_COST * 0.35)
   }
 
   shootDeposits.push(...killAirCellAndPrune(hit.targetPlant, hit.targetCell, occupancy))
@@ -1037,7 +1041,8 @@ function runCellProgram(
   }
 
   const stack: number[] = []
-  let dir: Direction = cell.dir
+  /** Рабочее относительное направление (символ UP/LEFT/…); по умолчанию — вперёд. */
+  let dir: Direction = 'UP'
   let ip = 0
   let steps = 0
   let traceStep = 0
@@ -1087,6 +1092,12 @@ function runCellProgram(
     if (whenArg === WHEN_PREV_FAIL) return 'WHEN prev fail — предыдущее не провалилось'
     return `WHEN не выполнено (${stackVal.toFixed(2)} < ${decodeLiteral(whenArg).toFixed(2)})`
   }
+
+  const toWorld = (relative: Direction): Direction =>
+    resolveRelativeDir(cell.dir, relative)
+
+  const formatResolved = (relative: Direction): string =>
+    `${relative} → ${toWorld(relative)} (ori=${cell.dir})`
 
   while (steps < VM_STEP_BUDGET && ip < code.length) {
     steps++
@@ -1209,10 +1220,18 @@ function runCellProgram(
           break
         }
         attempted = true
-        if (tryGrowMeristem(cell, dir, ctx, 'GROW')) {
+        if (tryGrowMeristem(cell, toWorld(dir), dir, ctx, 'GROW')) {
           markStructural(true)
           matureParentAfterOffspring(cell, ctx.plant.id)
-          logStep(op, 1, a0, 0, stackBefore, stack, () => 'GROW успешен — родитель созрел', {
+          logStep(
+            op,
+            1,
+            a0,
+            0,
+            stackBefore,
+            stack,
+            () => `GROW ${formatResolved(dir)} успешен — родитель созрел`,
+            {
             structuralAttempt: true,
             structuralSuccess: true,
             runEnded: true,
@@ -1241,14 +1260,22 @@ function runCellProgram(
           ip = resolved.ip
           break
         }
-        const actionDir = resolved.direction
+        const whereRel = resolved.direction
+        const worldDir = toWorld(whereRel)
         attempted = true
-        if (tryGrowMeristem(cell, actionDir, ctx, 'BRANCH')) {
+        if (tryGrowMeristem(cell, worldDir, whereRel, ctx, 'BRANCH')) {
           markStructural(true)
-          cell.dir = actionDir
           cell.waitingForGrow = false
           actions++
-          logStep(op, 2, a0, a1, stackBefore, stack, () => `BRANCH ${actionDir} успешен (${actions}/${maxActions})`, {
+          logStep(
+            op,
+            2,
+            a0,
+            a1,
+            stackBefore,
+            stack,
+            () => `BRANCH ${formatResolved(whereRel)} успешен (${actions}/${maxActions})`,
+            {
             structuralAttempt: true,
             structuralSuccess: true,
             runEnded: actions >= maxActions,
@@ -1260,7 +1287,7 @@ function runCellProgram(
           break
         }
         markStructural(false)
-        logStep(op, 2, a0, a1, stackBefore, stack, () => `BRANCH ${actionDir} не прошёл`, {
+        logStep(op, 2, a0, a1, stackBefore, stack, () => `BRANCH ${formatResolved(whereRel)} не прошёл`, {
           structuralAttempt: true,
           structuralSuccess: false,
         })
@@ -1314,14 +1341,21 @@ function runCellProgram(
           ip = resolved.ip
           break
         }
-        const actionDir = resolved.direction
+        const whereRel = resolved.direction
         attempted = true
-        if (placeSpikeCell(cell, actionDir, ctx)) {
+        if (placeSpikeCell(cell, toWorld(whereRel), ctx)) {
           markStructural(true)
-          cell.dir = actionDir
           cell.waitingForGrow = false
           actions++
-          logStep(op, 2, a0, a1, stackBefore, stack, () => `SPIKE ${actionDir} успешен (${actions}/${maxActions})`, {
+          logStep(
+            op,
+            2,
+            a0,
+            a1,
+            stackBefore,
+            stack,
+            () => `SPIKE ${formatResolved(whereRel)} успешен (${actions}/${maxActions})`,
+            {
             structuralAttempt: true,
             structuralSuccess: true,
             runEnded: actions >= maxActions,
@@ -1333,7 +1367,7 @@ function runCellProgram(
           break
         }
         markStructural(false)
-        logStep(op, 2, a0, a1, stackBefore, stack, () => `SPIKE ${actionDir} не прошёл`, {
+        logStep(op, 2, a0, a1, stackBefore, stack, () => `SPIKE ${formatResolved(whereRel)} не прошёл`, {
           structuralAttempt: true,
           structuralSuccess: false,
         })
@@ -1354,20 +1388,25 @@ function runCellProgram(
           ip = resolved.ip
           break
         }
-        const actionDir = resolved.direction
+        const whereRel = resolved.direction
         attempted = true
-        if (shootSpike(cell, actionDir, ctx)) {
+        if (shootSpike(cell, whereRel, ctx)) {
           markStructural(true)
           cell.waitingForGrow = false
-          logStep(op, 2, a0, a1, stackBefore, stack, () => `SHOOT ${actionDir} успешен — попадание по цели`, {
-            structuralAttempt: true,
-            structuralSuccess: true,
-            runEnded: true,
-          })
+          logStep(
+            op,
+            2,
+            a0,
+            a1,
+            stackBefore,
+            stack,
+            () => `SHOOT ${formatResolved(whereRel)} успешен — попадание по цели`,
+            { structuralAttempt: true, structuralSuccess: true, runEnded: true },
+          )
           return { actions: actions + 1, matured: false, attempted }
         }
         markStructural(false)
-        logStep(op, 2, a0, a1, stackBefore, stack, () => `SHOOT ${actionDir} не прошёл`, {
+        logStep(op, 2, a0, a1, stackBefore, stack, () => `SHOOT ${formatResolved(whereRel)} не прошёл`, {
           structuralAttempt: true,
           structuralSuccess: false,
         })
