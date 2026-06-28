@@ -30,7 +30,7 @@ export function opHelp(op: OpName): string {
     case 'SPIKE':
       return 'ACTION(WHERE, WHEN): шип в соседней клетке; WHERE и WHEN как у BRANCH.'
     case 'SHOOT':
-      return 'ACTION(WHERE, WHEN): шип на 2 клетки + мерistema; WHEN — порог IF. Завершает прогон.'
+      return 'ACTION(WHERE, WHEN): луч от шипа по направлению; попадание только в чужой побег или слабый ствол. Завершает прогон.'
   }
 }
 

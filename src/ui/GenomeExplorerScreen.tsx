@@ -7,6 +7,7 @@ import {
   genomeMaxAge,
   genomeSeedReserve,
   genomeShadeSenescence,
+  genomeShootRange,
   doubleGrowthLabel,
   shadeSenescenceLabel,
 } from '../sim/genome'
@@ -56,7 +57,7 @@ export default function GenomeExplorerScreen({
 
   const trace = useMemo<GrowthVmTrace | null>(() => {
     if (!plant || plant.dead) return null
-    return traceGrowthVM(plant, world.occupancy, world.light, world.minerals, world.rng)
+    return traceGrowthVM(plant, world.plants, world.occupancy, world.light, world.minerals, world.rng)
   }, [plant, tick, world])
 
   const lines = useMemo(
@@ -198,6 +199,7 @@ export default function GenomeExplorerScreen({
         <div className="genome-explorer__meta-row">
           <span>тень (&gt;{SHADED_SPROUT_LAYERS} сл.): {shadeSenescenceLabel(genomeShadeSenescence(g))}</span>
           <span>двойной рост: {doubleGrowthLabel(genomeDoubleGrowth(g))}</span>
+          <span>дальность SHOOT: {genomeShootRange(g)} кл.</span>
           <span>байт в геноме: {g.code.length}</span>
         </div>
       </div>

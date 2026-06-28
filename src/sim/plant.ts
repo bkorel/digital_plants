@@ -19,6 +19,7 @@ import {
   SEED_FORMATION_OVERHEAD,
   SPIKE_COST,
   SHOOT_COST,
+  SHOOT_STEM_KILL_MAX_ENERGY,
   PHOTO_GAIN_FACTOR,
   STEM_PHOTO_GAIN_FACTOR,
   SPROUT_SINK_POTENTIAL,
@@ -46,6 +47,7 @@ import {
   genomeMaxAge,
   genomeSeedReserve,
   genomeDoubleGrowth,
+  genomeShootRange,
   isStructuralGoto,
   opArgCount,
   passesWhen,
@@ -58,6 +60,7 @@ import {
   type SensorName,
 } from './genome'
 import { isInWorld, isYInBounds, offsetX, wrapX } from './coords'
+import { killAirCellAndPrune, type MineralDeposit } from './foliage'
 import { SEED_OCC, isCellFree } from './occupancy'
 import { emitPlantEvent } from './plantEvents'
 import { Rng } from './rng'
@@ -457,6 +460,7 @@ function clearOccupancy(occupancy: Int32Array[], cell: PlantCell): void {
 
 export interface GrowthResult {
   newSeeds: { x: number; y: number; energy: number }[]
+  shootDeposits: MineralDeposit[]
 }
 
 function growCost(dir: Direction): number {
@@ -618,11 +622,13 @@ function recordVmStep(
 
 interface VMContext {
   plant: Plant
+  plants: Plant[]
   occupancy: Int32Array[]
   light: Float32Array
   minerals: Float32Array
   rng: Rng
   newSeeds: { x: number; y: number; energy: number }[]
+  shootDeposits: MineralDeposit[]
 }
 
 /** Создать дочернюю клетку-меристему в направлении dir. true — если получилось. */
@@ -861,7 +867,6 @@ function placeSpikeCell(
   cell: PlantCell,
   dir: Direction,
   ctx: VMContext,
-  eventKind: 'SPIKE' | 'SHOOT',
 ): PlantCell | null {
   const { plant, occupancy } = ctx
   if (cell.y >= WORLD.SOIL_Y - 1) return null
@@ -873,25 +878,23 @@ function placeSpikeCell(
 
   const existing = getCellAt(plant, nx, ny)
   if (existing?.type === 'SPIKE') {
-    const cost = eventKind === 'SHOOT' ? SHOOT_COST : SPIKE_COST
-    if (cell.cellEnergy < cost) return null
-    cell.cellEnergy -= cost
-    existing.cellEnergy = Math.min(CAP.SPIKE, existing.cellEnergy + cost * 0.35)
+    if (cell.cellEnergy < SPIKE_COST) return null
+    cell.cellEnergy -= SPIKE_COST
+    existing.cellEnergy = Math.min(CAP.SPIKE, existing.cellEnergy + SPIKE_COST * 0.35)
     return existing
   }
   if (!canPlace(occupancy, plant.id, nx, ny, dir)) return null
 
-  const cost = eventKind === 'SHOOT' ? SHOOT_COST : SPIKE_COST
-  if (cell.cellEnergy < cost) return null
+  if (cell.cellEnergy < SPIKE_COST) return null
 
-  cell.cellEnergy -= cost
+  cell.cellEnergy -= SPIKE_COST
   const spike: PlantCell = {
     id: nextCellId++,
     x: nx,
     y: ny,
     type: 'SPIKE',
     dir,
-    cellEnergy: cost * 0.4,
+    cellEnergy: SPIKE_COST * 0.4,
     age: 0,
     waitingForGrow: false,
   }
@@ -899,7 +902,7 @@ function placeSpikeCell(
   setOccupancy(occupancy, plant.id, spike)
   emitPlantEvent({
     plantId: plant.id,
-    kind: eventKind,
+    kind: 'SPIKE',
     x: nx,
     y: ny,
     fromX: cell.x,
@@ -908,52 +911,104 @@ function placeSpikeCell(
   return spike
 }
 
-/** Мерistemа за шипом — цепочка «выстрелов». */
-function sproutBeyondSpike(
-  source: PlantCell,
-  spike: PlantCell,
+interface ShootHit {
+  x: number
+  y: number
+  targetPlant: Plant
+  targetCell: PlantCell
+}
+
+function raycastShootTarget(
+  spikeX: number,
+  spikeY: number,
   dir: Direction,
-  ctx: VMContext,
-): boolean {
-  const { plant, occupancy } = ctx
+  shooterPlantId: number,
+  range: number,
+  plantById: Map<number, Plant>,
+  occupancy: Int32Array[],
+): ShootHit | null {
   const { dx, dy } = DIR_DELTA[dir]
-  const ax = offsetX(spike.x, dx)
-  const ay = spike.y + dy
-  if (!isYInBounds(ay) || ay >= WORLD.SOIL_Y) return false
-  if (!canPlace(occupancy, plant.id, ax, ay, dir)) return false
-  if (plantWaterSupply(plant) < MIN_WATER_FOR_GROW) return false
+  for (let step = 1; step <= range; step++) {
+    const x = offsetX(spikeX, dx * step)
+    const y = spikeY + dy * step
+    if (!isYInBounds(y) || y >= WORLD.SOIL_Y) return null
 
-  const cost = growCost(dir) * 0.6
-  if (source.cellEnergy < cost) return false
+    const occ = occupancy[y][x]
+    if (occ === 0) continue
+    if (occ === SEED_OCC) return null
+    if (occ === shooterPlantId) continue
 
-  source.cellEnergy -= cost
-  const sprout: PlantCell = {
-    id: nextCellId++,
-    x: ax,
-    y: ay,
-    type: 'SPROUT',
-    dir,
-    cellEnergy: 0.8,
-    age: 0,
-    waitingForGrow: false,
+    const targetPlant = plantById.get(occ)
+    if (!targetPlant) return null
+
+    const targetCell = targetPlant.cells.find((c) => c.x === x && c.y === y)
+    if (!targetCell) return null
+
+    if (targetCell.type === 'SPROUT') {
+      return { x, y, targetPlant, targetCell }
+    }
+    if (targetCell.type === 'STEM' && targetCell.cellEnergy <= SHOOT_STEM_KILL_MAX_ENERGY) {
+      return { x, y, targetPlant, targetCell }
+    }
+    return null
   }
-  plant.cells.push(sprout)
-  setOccupancy(occupancy, plant.id, sprout)
-  emitPlantEvent({
-    plantId: plant.id,
-    kind: 'GROW',
-    x: ax,
-    y: ay,
-    fromX: spike.x,
-    fromY: spike.y,
-  })
-  return true
+  return null
 }
 
 function shootSpike(cell: PlantCell, dir: Direction, ctx: VMContext): boolean {
-  const spike = placeSpikeCell(cell, dir, ctx, 'SHOOT')
-  if (!spike) return false
-  sproutBeyondSpike(cell, spike, dir, ctx)
+  const { plant, occupancy, plants, shootDeposits } = ctx
+  if (cell.cellEnergy < SHOOT_COST) return false
+  if (cell.y >= WORLD.SOIL_Y - 1) return false
+
+  const { dx, dy } = DIR_DELTA[dir]
+  const sx = offsetX(cell.x, dx)
+  const sy = cell.y + dy
+  if (!isYInBounds(sy) || sy >= WORLD.SOIL_Y) return false
+
+  const existingSpike = getCellAt(plant, sx, sy)
+  const hasSpike = existingSpike?.type === 'SPIKE'
+  const canCreateSpike = !existingSpike && canPlace(occupancy, plant.id, sx, sy, dir)
+  if (!hasSpike && !canCreateSpike) return false
+
+  const plantById = new Map<number, Plant>()
+  for (const p of plants) {
+    if (!p.dead) plantById.set(p.id, p)
+  }
+
+  const range = genomeShootRange(plant.genome)
+  const hit = raycastShootTarget(sx, sy, dir, plant.id, range, plantById, occupancy)
+  if (!hit) return false
+
+  cell.cellEnergy -= SHOOT_COST
+  let spike: PlantCell
+  if (hasSpike && existingSpike) {
+    spike = existingSpike
+    spike.cellEnergy = Math.min(CAP.SPIKE, spike.cellEnergy + SHOOT_COST * 0.35)
+  } else {
+    spike = {
+      id: nextCellId++,
+      x: sx,
+      y: sy,
+      type: 'SPIKE',
+      dir,
+      cellEnergy: SHOOT_COST * 0.4,
+      age: 0,
+      waitingForGrow: false,
+    }
+    plant.cells.push(spike)
+    setOccupancy(occupancy, plant.id, spike)
+  }
+
+  shootDeposits.push(...killAirCellAndPrune(hit.targetPlant, hit.targetCell, occupancy))
+
+  emitPlantEvent({
+    plantId: plant.id,
+    kind: 'SHOOT',
+    x: hit.x,
+    y: hit.y,
+    fromX: spike.x,
+    fromY: spike.y,
+  })
   return true
 }
 
@@ -1261,7 +1316,7 @@ function runCellProgram(
         }
         const actionDir = resolved.direction
         attempted = true
-        if (placeSpikeCell(cell, actionDir, ctx, 'SPIKE')) {
+        if (placeSpikeCell(cell, actionDir, ctx)) {
           markStructural(true)
           cell.dir = actionDir
           cell.waitingForGrow = false
@@ -1304,7 +1359,7 @@ function runCellProgram(
         if (shootSpike(cell, actionDir, ctx)) {
           markStructural(true)
           cell.waitingForGrow = false
-          logStep(op, 2, a0, a1, stackBefore, stack, () => `SHOOT ${actionDir} успешен — шип и мерistema за ним`, {
+          logStep(op, 2, a0, a1, stackBefore, stack, () => `SHOOT ${actionDir} успешен — попадание по цели`, {
             structuralAttempt: true,
             structuralSuccess: true,
             runEnded: true,
@@ -1455,6 +1510,7 @@ function traceProcessSproutGroup(
 /** Прогон VM с полной трассировкой на клоне растения (не меняет исходное растение) */
 export function traceGrowthVM(
   plant: Plant,
+  plants: Plant[],
   occupancy: Int32Array[],
   light: Float32Array,
   minerals: Float32Array,
@@ -1473,7 +1529,18 @@ export function traceGrowthVM(
 
   const occ = occupancy.map((row) => new Int32Array(row))
   const newSeeds: { x: number; y: number; energy: number }[] = []
-  const ctx: VMContext = { plant: clone, occupancy: occ, light, minerals, rng: traceRng, newSeeds }
+  const shootDeposits: MineralDeposit[] = []
+  const plantsForTrace = plants.map((p) => (p.id === plant.id ? clone : p))
+  const ctx: VMContext = {
+    plant: clone,
+    plants: plantsForTrace,
+    occupancy: occ,
+    light,
+    minerals,
+    rng: traceRng,
+    newSeeds,
+    shootDeposits,
+  }
 
   const sprouts = clone.cells.filter((c) => c.type === 'SPROUT')
   const soilSprouts = sprouts
@@ -1520,16 +1587,27 @@ export function traceGrowthVM(
 
 export function executeGrowthVM(
   plant: Plant,
+  plants: Plant[],
   occupancy: Int32Array[],
   light: Float32Array,
   minerals: Float32Array,
   rng: Rng,
 ): GrowthResult {
   const newSeeds: { x: number; y: number; energy: number }[] = []
-  if (plant.dead) return { newSeeds }
+  const shootDeposits: MineralDeposit[] = []
+  if (plant.dead) return { newSeeds, shootDeposits }
   // Размер не ограничен жёстко: рост и выживание лимитируются энергией (доход vs upkeep).
 
-  const ctx: VMContext = { plant, occupancy, light, minerals, rng, newSeeds }
+  const ctx: VMContext = {
+    plant,
+    plants,
+    occupancy,
+    light,
+    minerals,
+    rng,
+    newSeeds,
+    shootDeposits,
+  }
 
   const sprouts = plant.cells.filter((c) => c.type === 'SPROUT')
   const soilSprouts = sprouts
@@ -1551,7 +1629,7 @@ export function executeGrowthVM(
   processSproutGroup(soilSprouts, ctx, rootBudget, actionsRef)
   processSproutGroup(airSprouts, ctx, budget, actionsRef)
 
-  return { newSeeds }
+  return { newSeeds, shootDeposits }
 }
 
 export function agePlant(plant: Plant): void {

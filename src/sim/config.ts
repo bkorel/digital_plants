@@ -97,17 +97,19 @@ export const MIN_SEED_HEIGHT = 2
 export const SEED_SCATTER = 3
 /** Энергия на выставление шипа в соседнюю клетку */
 export const SPIKE_COST = 1.5
-/** Энергия на «выстрел» шипа на расстояние 2 клетки */
+/** Энергия на успешный выстрел (SHOOT) */
 export const SHOOT_COST = 2.5
 /** Сколько тиков красная линия выстрела остаётся на экране */
 export const SHOOT_VISUAL_TTL = 48
-/** Радиус от шипа, в котором гибнут чужие листья (манхэттен) */
+/** Мин./макс. дальность луча SHOOT (клетки), верхняя граница — из генома */
+export const SHOOT_RANGE_MIN = 3
+export const SHOOT_RANGE_MAX = 50
+/** Чужой STEM в воздухе уничтожается выстрелом при энергии ≤ этого порога */
+export const SHOOT_STEM_KILL_MAX_ENERGY = 4.0
+/** Радиус от шипа, в котором гибнут чужие побеги (SPROUT, манхэттен); не рисуется на экране */
+export const SPIKE_LEAF_KILL_RADIUS = 2
 /** @deprecated больше не используется — расчистка только колонки посадки */
 export const PLANT_CLEAR_RADIUS = 2
-/** Радиус от шипа, в котором гибнут чужие листья (манхэттен) */
-export const SPIKE_LEAF_KILL_RADIUS = 2
-/** Потеря энергии чужого стебля за тик в радиусе шипа */
-export const SPIKE_STEM_DRAIN = 0.35
 
 export const MUTATION = {
   P_POINT: 0.005,

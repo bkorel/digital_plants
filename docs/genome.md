@@ -40,7 +40,7 @@ type Genome = {
 | `BRANCH`| 2   | ACTION: arg0 WHERE (`%8`: 0–1 UP, 2 DOWN, 3–4 LEFT, 5–6 RIGHT, 7 GOTO+byte), arg1 WHEN |
 | `SEED`  | 2   | ACTION: WHERE=DIR, arg0 доля семени, arg1 WHEN |
 | `SPIKE` | 2   | ACTION: WHERE + WHEN (как BRANCH) |
-| `SHOOT` | 2   | ACTION: WHERE + WHEN; завершает прогон |
+| `SHOOT` | 2   | ACTION: WHERE + WHEN; луч от шипа по чужой цели; завершает прогон |
 
 **WHEN** — встроенный IF: действие выполняется, только если `вершина_стека ≥ decodeLiteral(WHEN)`
 (по умолчанию в шаблонах `0.5`). Специальные значения WHEN: **`250`** — prev ok,

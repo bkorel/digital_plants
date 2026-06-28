@@ -452,7 +452,10 @@ export class World {
     const fallenSeeds: SeedInSoil[] = []
     for (const plant of this.plants) {
       if (plant.dead) continue
-      executeGrowthVM(plant, this.occupancy, this.light, this.minerals, this.rng)
+      const growth = executeGrowthVM(plant, this.plants, this.occupancy, this.light, this.minerals, this.rng)
+      for (const dep of growth.shootDeposits) {
+        depositMinerals(this.minerals, dep.x, dep.y, dep.amount)
+      }
       fallenSeeds.push(...detachFallingSeeds(plant, this.occupancy))
     }
 

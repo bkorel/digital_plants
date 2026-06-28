@@ -8,6 +8,7 @@ import {
   genomeOriginLabel,
   genomeSeedReserve,
   genomeShadeSenescence,
+  genomeShootRange,
   serializeGenome,
   doubleGrowthLabel,
   shadeSenescenceLabel,
@@ -153,6 +154,7 @@ export default function GenomePanel({
           тень (&gt;{SHADED_SPROUT_LAYERS} сл.): {shadeSenescenceLabel(genomeShadeSenescence(g))}
         </div>
         <div>двойной рост: {doubleGrowthLabel(genomeDoubleGrowth(g))}</div>
+        <div>дальность SHOOT: {genomeShootRange(g)} кл.</div>
       </div>
 
       <div className="controls-row">

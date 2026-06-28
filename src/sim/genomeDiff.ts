@@ -137,113 +137,123 @@ export function diffBytes(a: Uint8Array, b: Uint8Array): ByteDiffSegment[] {
   return merged
 }
 
-function lcsAlign<T>(a: T[], b: T[], eq: (x: T, y: T) => boolean): Array<{ a?: T; b?: T }> {
+function disasmLineEqual(a: DisasmLine, b: DisasmLine): boolean {
+  return a.text === b.text && a.bytesHex === b.bytesHex
+}
+
+function disasmLineKey(line: DisasmLine): string {
+  return `${line.text}\0${line.bytesHex}`
+}
+
+/** LIS по bi при partners, отсортированных по ai (patience diff). */
+function patienceAnchorChain(partners: Array<{ ai: number; bi: number }>): Array<{ ai: number; bi: number }> {
+  if (partners.length === 0) return []
+  const tail: number[] = []
+  const prev = new Array<number>(partners.length).fill(-1)
+  for (let i = 0; i < partners.length; i++) {
+    const bi = partners[i]!.bi
+    let lo = 0
+    let hi = tail.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (partners[tail[mid]!]!.bi < bi) lo = mid + 1
+      else hi = mid
+    }
+    if (lo > 0) prev[i] = tail[lo - 1]!
+    tail[lo] = i
+  }
+  const chain: number[] = []
+  let k = tail.length > 0 ? tail[tail.length - 1]! : -1
+  while (k >= 0) {
+    chain.push(k)
+    k = prev[k]!
+  }
+  chain.reverse()
+  return chain.map((i) => partners[i]!)
+}
+
+/**
+ * Patience diff: якоря — инструкции, встречающиеся ровно один раз в обоих геномах.
+ * Между якорями — editAlign (короткие участки с повторяющимися LT/GT/AND).
+ */
+function patienceAlign<T>(
+  a: T[],
+  b: T[],
+  key: (x: T) => string,
+  eq: (x: T, y: T) => boolean,
+): Array<{ a?: T; b?: T }> {
+  if (a.length === 0) return b.map((line) => ({ b: line }))
+  if (b.length === 0) return a.map((line) => ({ a: line }))
+
+  const countA = new Map<string, number>()
+  const countB = new Map<string, number>()
+  for (const line of a) countA.set(key(line), (countA.get(key(line)) ?? 0) + 1)
+  for (const line of b) countB.set(key(line), (countB.get(key(line)) ?? 0) + 1)
+
+  const bPosByKey = new Map<string, number>()
+  for (let j = 0; j < b.length; j++) {
+    const k = key(b[j]!)
+    if (countB.get(k) === 1) bPosByKey.set(k, j)
+  }
+
+  const partners: Array<{ ai: number; bi: number }> = []
+  for (let i = 0; i < a.length; i++) {
+    const k = key(a[i]!)
+    if (countA.get(k) !== 1 || countB.get(k) !== 1) continue
+    const j = bPosByKey.get(k)
+    if (j != null) partners.push({ ai: i, bi: j })
+  }
+
+  if (partners.length === 0) return editAlign(a, b, eq)
+
+  const anchors = patienceAnchorChain(partners)
+  const result: Array<{ a?: T; b?: T }> = []
+  let aStart = 0
+  let bStart = 0
+  for (const { ai, bi } of anchors) {
+    if (ai > aStart || bi > bStart) {
+      result.push(...patienceAlign(a.slice(aStart, ai), b.slice(bStart, bi), key, eq))
+    }
+    result.push({ a: a[ai], b: b[bi] })
+    aStart = ai + 1
+    bStart = bi + 1
+  }
+  if (aStart < a.length || bStart < b.length) {
+    result.push(...patienceAlign(a.slice(aStart), b.slice(bStart), key, eq))
+  }
+  return result
+}
+
+/** Короткий edit-distance diff (fallback между patience-якорями). */
+function editAlign<T>(a: T[], b: T[], eq: (x: T, y: T) => boolean): Array<{ a?: T; b?: T }> {
   const n = a.length
   const m = b.length
+  if (n === 0) return b.map((line) => ({ b: line }))
+  if (m === 0) return a.map((line) => ({ a: line }))
+
   const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0))
   for (let i = n - 1; i >= 0; i--) {
     for (let j = m - 1; j >= 0; j--) {
-      dp[i]![j] = eq(a[i]!, b[j]!)
-        ? 1 + dp[i + 1]![j + 1]!
-        : Math.max(dp[i + 1]![j]!, dp[i]![j + 1]!)
+      const sub = 1 + dp[i + 1]![j + 1]!
+      dp[i]![j] = Math.min(1 + dp[i + 1]![j]!, 1 + dp[i]![j + 1]!, sub)
     }
   }
+
   const result: Array<{ a?: T; b?: T }> = []
   let i = 0
   let j = 0
   while (i < n || j < m) {
-    if (i < n && j < m && eq(a[i]!, b[j]!)) {
-      result.push({ a: a[i], b: b[j] })
+    if (i < n && j < m && dp[i]![j] === dp[i + 1]![j + 1]! + 1) {
+      result.push(eq(a[i]!, b[j]!) ? { a: a[i], b: b[j] } : { a: a[i], b: b[j] })
       i++
       j++
-    } else if (j < m && (i >= n || dp[i + 1]![j]! >= dp[i]![j + 1]!)) {
+    } else if (j < m && (i >= n || dp[i]![j] === dp[i]![j + 1]! + 1)) {
       result.push({ b: b[j] })
       j++
     } else {
       result.push({ a: a[i] })
       i++
     }
-  }
-  return result
-}
-
-function disasmLineEqual(a: DisasmLine, b: DisasmLine): boolean {
-  return a.text === b.text && a.bytesHex === b.bytesHex
-}
-
-function linesInByteRange(lines: DisasmLine[], start: number, end: number): DisasmLine[] {
-  return lines.filter((l) => l.index >= start && l.index + l.byteLength <= end)
-}
-
-function instructionAtByte(lines: DisasmLine[], byteIdx: number): DisasmLine | undefined {
-  return lines.find((l) => l.index < byteIdx && l.index + l.byteLength > byteIdx)
-}
-
-function snapStart(byteIdx: number, lines: DisasmLine[]): number {
-  if (byteIdx <= 0) return 0
-  const line = instructionAtByte(lines, byteIdx)
-  return line ? line.index : byteIdx
-}
-
-function snapEnd(byteIdx: number, lines: DisasmLine[], len: number): number {
-  const line = instructionAtByte(lines, byteIdx)
-  if (line) return line.index + line.byteLength
-  return Math.min(byteIdx, len)
-}
-
-/** Расширить границы изменённых сегментов до целых инструкций и пересобрать equal-пробелы */
-function snapSegmentsToInstructions(
-  segments: ByteDiffSegment[],
-  linesA: DisasmLine[],
-  linesB: DisasmLine[],
-  lenA: number,
-  lenB: number,
-): ByteDiffSegment[] {
-  const changed = segments
-    .filter((s) => s.kind !== 'equal')
-    .map((s) => ({
-      kind: s.kind,
-      aStart: snapStart(s.aStart, linesA),
-      aEnd: snapEnd(s.aEnd, linesA, lenA),
-      bStart: snapStart(s.bStart, linesB),
-      bEnd: snapEnd(s.bEnd, linesB, lenB),
-    }))
-
-  if (changed.length === 0) {
-    return [{ kind: 'equal', aStart: 0, aEnd: lenA, bStart: 0, bEnd: lenB }]
-  }
-
-  const merged: typeof changed = []
-  for (const ch of changed) {
-    const prev = merged[merged.length - 1]
-    if (prev && prev.aEnd >= ch.aStart && prev.bEnd >= ch.bStart) {
-      prev.aEnd = Math.max(prev.aEnd, ch.aEnd)
-      prev.bEnd = Math.max(prev.bEnd, ch.bEnd)
-      if (prev.kind !== ch.kind) prev.kind = 'replace'
-    } else {
-      merged.push({ ...ch })
-    }
-  }
-
-  const result: ByteDiffSegment[] = []
-  let aPos = 0
-  let bPos = 0
-  for (const ch of merged) {
-    if (aPos < ch.aStart || bPos < ch.bStart) {
-      result.push({ kind: 'equal', aStart: aPos, aEnd: ch.aStart, bStart: bPos, bEnd: ch.bStart })
-    }
-    result.push({
-      kind: ch.kind,
-      aStart: ch.aStart,
-      aEnd: ch.aEnd,
-      bStart: ch.bStart,
-      bEnd: ch.bEnd,
-    })
-    aPos = ch.aEnd
-    bPos = ch.bEnd
-  }
-  if (aPos < lenA || bPos < lenB) {
-    result.push({ kind: 'equal', aStart: aPos, aEnd: lenA, bStart: bPos, bEnd: lenB })
   }
   return result
 }
@@ -291,43 +301,12 @@ export function pairDeleteInsertRows(rows: AlignedDiffRow[]): AlignedDiffRow[] {
   return result
 }
 
-function alignReplaceBlock(aLines: DisasmLine[], bLines: DisasmLine[]): AlignedDiffRow[] {
-  const aligned = lcsAlign(aLines, bLines, disasmLineEqual)
-  const raw = aligned.map(({ a, b }) => toRow(a, b))
-  return pairDeleteInsertRows(raw)
-}
-
-/** Выравнивание инструкций через побайтовые якоря + sub-diff в replace-блоках */
+/** Выравнивание инструкций: patience diff (якоря по уникальным строкам) + edit fallback. */
 export function alignDisasm(a: Genome, b: Genome): AlignedDiffRow[] {
   const linesA = disassemble(a)
   const linesB = disassemble(b)
-  const rawSegments = diffBytes(a.code, b.code)
-  const segments = snapSegmentsToInstructions(
-    rawSegments,
-    linesA,
-    linesB,
-    a.code.length,
-    b.code.length,
-  )
-
-  const rows: AlignedDiffRow[] = []
-  for (const seg of segments) {
-    const aLines = linesInByteRange(linesA, seg.aStart, seg.aEnd)
-    const bLines = linesInByteRange(linesB, seg.bStart, seg.bEnd)
-
-    if (seg.kind === 'equal') {
-      for (let k = 0; k < aLines.length; k++) {
-        rows.push(toRow(aLines[k], bLines[k]))
-      }
-    } else if (seg.kind === 'delete') {
-      for (const line of aLines) rows.push({ kind: 'del', aLine: line, prefix: '-' })
-    } else if (seg.kind === 'insert') {
-      for (const line of bLines) rows.push({ kind: 'ins', bLine: line, prefix: '+' })
-    } else {
-      rows.push(...alignReplaceBlock(aLines, bLines))
-    }
-  }
-  return rows
+  const aligned = patienceAlign(linesA, linesB, disasmLineKey, disasmLineEqual)
+  return aligned.map(({ a: aLine, b: bLine }) => toRow(aLine, bLine))
 }
 
 function countChangedBytes(segments: ByteDiffSegment[]): number {
