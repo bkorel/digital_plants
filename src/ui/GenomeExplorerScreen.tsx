@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   disassemble,
   genomeDepthCap,
@@ -10,13 +10,19 @@ import {
   doubleGrowthLabel,
   shadeSenescenceLabel,
 } from '../sim/genome'
-import { disasmLineHelp } from '../sim/genomeHelp'
+import {
+  disasmLineHelp,
+  disasmLineHuman,
+  formatStack,
+  vmStepSummary,
+} from '../sim/genomeHelp'
 import {
   plantGrowActionBudget,
   plantTotalEnergy,
   traceGrowthVM,
   type GrowthVmTrace,
   type MeristemRunTrace,
+  type VmStepTrace,
 } from '../sim/plant'
 import { SHADED_SPROUT_LAYERS, WORLD } from '../sim/config'
 import type { Plant } from '../sim/types'
@@ -44,6 +50,9 @@ export default function GenomeExplorerScreen({
   const [selectedCellId, setSelectedCellId] = useState<number | null>(null)
   const [stepIndex, setStepIndex] = useState(0)
   const [autoPlay, setAutoPlay] = useState(false)
+  const [expandedHelpIp, setExpandedHelpIp] = useState<number | null>(null)
+  const [showLegend, setShowLegend] = useState(true)
+  const activeGeneRef = useRef<HTMLDivElement | null>(null)
 
   const trace = useMemo<GrowthVmTrace | null>(() => {
     if (!plant || plant.dead) return null
@@ -80,6 +89,11 @@ export default function GenomeExplorerScreen({
 
   const maxStep = activeRun ? Math.max(0, activeRun.steps.length - 1) : 0
   const currentStep = activeRun?.steps[stepIndex]
+  const highlightedIp = currentStep?.ip ?? -1
+
+  useEffect(() => {
+    activeGeneRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, [highlightedIp])
 
   useEffect(() => {
     if (!autoPlay || !activeRun) return
@@ -91,12 +105,22 @@ export default function GenomeExplorerScreen({
     return () => window.clearTimeout(t)
   }, [autoPlay, stepIndex, maxStep, activeRun])
 
-  const highlightedIp = currentStep?.ip ?? -1
-
   const handleRefreshTrace = useCallback(() => {
     setStepIndex(0)
     setAutoPlay(false)
   }, [])
+
+  const jumpToStepForIp = useCallback(
+    (ip: number) => {
+      if (!activeRun) return
+      const idx = activeRun.steps.findIndex((s) => s.ip === ip)
+      if (idx >= 0) {
+        setStepIndex(idx)
+        setAutoPlay(false)
+      }
+    },
+    [activeRun],
+  )
 
   if (!plant) {
     return (
@@ -145,48 +169,117 @@ export default function GenomeExplorerScreen({
         <button type="button" onClick={handleRefreshTrace}>
           Обновить трассировку
         </button>
+        <label className="genome-explorer__legend-toggle">
+          <input
+            type="checkbox"
+            checked={showLegend}
+            onChange={(e) => setShowLegend(e.target.checked)}
+          />
+          Справка по опкодам
+        </label>
       </div>
 
       <div className="genome-explorer__meta panel">
-        <div>
-          Клеток: {plant.cells.length} · мерistem: {sprouts.length} · энергия:{' '}
-          {plantTotalEnergy(plant).toFixed(1)} · бюджет роста:{' '}
-          {trace?.growActionBudget ?? plantGrowActionBudget(plant)} (корни:{' '}
-          {trace?.rootBudget ?? '—'})
+        <div className="genome-explorer__meta-row">
+          <span>Клеток: {plant.cells.length}</span>
+          <span>Мерistem: {sprouts.length}</span>
+          <span>Энергия: {plantTotalEnergy(plant).toFixed(1)}</span>
+          <span>
+            Бюджет роста: {trace?.growActionBudget ?? plantGrowActionBudget(plant)} (корни:{' '}
+            {trace?.rootBudget ?? '—'})
+          </span>
         </div>
-        <div>
-          maxAge: {genomeMaxAge(g)} · seedReserve: {genomeSeedReserve(g)} · высота ~{' '}
-          {Math.round(genomeHeightCap(g) * WORLD.SOIL_Y)} кл. · корни ~{' '}
-          {Math.round(genomeDepthCap(g) * (WORLD.H - WORLD.SOIL_Y))} кл.
+        <div className="genome-explorer__meta-row">
+          <span>maxAge: {genomeMaxAge(g)}</span>
+          <span>seedReserve: {genomeSeedReserve(g)}</span>
+          <span>высота ~{Math.round(genomeHeightCap(g) * WORLD.SOIL_Y)} кл.</span>
+          <span>корни ~{Math.round(genomeDepthCap(g) * (WORLD.H - WORLD.SOIL_Y))} кл.</span>
         </div>
-        <div>
-          тень (&gt;{SHADED_SPROUT_LAYERS} сл.): {shadeSenescenceLabel(genomeShadeSenescence(g))}{' '}
-          · двойной рост: {doubleGrowthLabel(genomeDoubleGrowth(g))}
+        <div className="genome-explorer__meta-row">
+          <span>тень (&gt;{SHADED_SPROUT_LAYERS} сл.): {shadeSenescenceLabel(genomeShadeSenescence(g))}</span>
+          <span>двойной рост: {doubleGrowthLabel(genomeDoubleGrowth(g))}</span>
+          <span>байт в геноме: {g.code.length}</span>
         </div>
       </div>
 
-      <div className="genome-explorer__grid">
+      {showLegend && (
+        <details className="panel genome-explorer__legend" open>
+          <summary>Как читать байткод</summary>
+          <div className="genome-explorer__legend-body">
+            <p>
+              Программа читается <strong>сверху вниз</strong>. Сначала на стек кладутся сенсоры и
+              сравнения; структурные команды — <code>ACTION(WHERE, WHEN)</code>: WHERE — направление,
+              WHEN — условие (стек ≥ порог, или «prev ok / prev fail»).
+            </p>
+            <ul>
+              <li>
+                <code>DIR</code> — WHERE для <code>GROW</code>/<code>SEED</code> и сенсоров по
+                направлению
+              </li>
+              <li>
+                <code>GROW / BRANCH / SEED / SPIKE / SHOOT</code> — действия; зелёные строки в
+                списке
+              </li>
+              <li>
+                <code>SENSE PREV_OK / PREV_FAIL</code> — исход предыдущего структурного действия
+              </li>
+              <li>
+                <code>WHEN prev ok</code> / <code>WHEN prev fail</code> — встроенный IF по прошлому
+                действию
+              </li>
+            </ul>
+          </div>
+        </details>
+      )}
+
+      <div className="genome-explorer__layout">
         <section className="panel genome-explorer__code">
           <h2>Расшифровка генома</h2>
           <p className="genome-explorer__hint">
-            Наведите на инструкцию — появится пояснение. Подсвечена текущая строка трассировки.
+            Клик по строке — развернуть пояснение. Подсветка — текущий шаг трассировки. Клик по
+            ▶ — перейти к шагу VM.
           </p>
-          <div className="gene-list genome-explorer__gene-list">
+          <div className="genome-explorer__gene-list">
             {lines.map((line) => {
               const active = line.index === highlightedIp
+              const expanded = expandedHelpIp === line.index
+              const hasTraceStep = activeRun?.steps.some((s) => s.ip === line.index)
               return (
                 <div
                   key={line.index}
-                  className={`gene-item genome-explorer__gene-item${active ? ' genome-explorer__gene-item--active' : ''}${line.structural ? ' genome-explorer__gene-item--structural' : ''}`}
-                  title={disasmLineHelp(line.text)}
+                  ref={active ? activeGeneRef : undefined}
+                  className={`genome-explorer__gene-item${active ? ' genome-explorer__gene-item--active' : ''}${line.structural ? ' genome-explorer__gene-item--structural' : ''}`}
                 >
-                  <span className="genome-explorer__gene-ip">
-                    {line.index.toString().padStart(3, ' ')}
-                  </span>
-                  <span className="genome-explorer__gene-text">{line.text}</span>
-                  <span className="genome-explorer__gene-tip" aria-hidden>
-                    ?
-                  </span>
+                  <div className="genome-explorer__gene-row">
+                    <span className="genome-explorer__gene-ip">{line.index.toString().padStart(3, ' ')}</span>
+                    <code className="genome-explorer__gene-bytes">{line.bytesHex}</code>
+                    <code className="genome-explorer__gene-text">{line.text}</code>
+                    {hasTraceStep && (
+                      <button
+                        type="button"
+                        className="genome-explorer__gene-jump"
+                        title="Перейти к шагу трассировки"
+                        onClick={() => jumpToStepForIp(line.index)}
+                      >
+                        ▶
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="genome-explorer__gene-help-btn"
+                      aria-expanded={expanded}
+                      title="Пояснение"
+                      onClick={() =>
+                        setExpandedHelpIp(expanded ? null : line.index)
+                      }
+                    >
+                      {expanded ? '−' : '?'}
+                    </button>
+                  </div>
+                  <div className="genome-explorer__gene-human">{disasmLineHuman(line.text)}</div>
+                  {expanded && (
+                    <div className="genome-explorer__gene-help">{disasmLineHelp(line.text)}</div>
+                  )}
                 </div>
               )
             })}
@@ -194,11 +287,7 @@ export default function GenomeExplorerScreen({
         </section>
 
         <section className="panel genome-explorer__sim">
-          <h2>Пошаговая трассировка VM</h2>
-          <p className="genome-explorer__hint">
-            Симуляция одного тика роста: для каждой мерistemы (SPROUT) программа читается сверху
-            вниз. Показаны проверки сенсоров, стек и результат каждой команды.
-          </p>
+          <h2>Трассировка VM (один тик)</h2>
 
           {runs.length === 0 ? (
             <p className="genome-explorer__empty-msg">
@@ -207,7 +296,7 @@ export default function GenomeExplorerScreen({
           ) : (
             <>
               <div className="genome-explorer__cells">
-                <span className="genome-explorer__cells-label">Мерistemы за тик:</span>
+                <span className="genome-explorer__cells-label">Мерistemы:</span>
                 {runs.map((run) => (
                   <button
                     key={run.cellId}
@@ -229,7 +318,7 @@ export default function GenomeExplorerScreen({
               </div>
 
               {activeRun && (
-                <>
+                <div className="genome-explorer__sim-body">
                   <div className="genome-explorer__run-header">
                     <div>
                       Клетка #{activeRun.cellId} · ({activeRun.x}, {activeRun.y}) ·{' '}
@@ -239,10 +328,14 @@ export default function GenomeExplorerScreen({
                   </div>
 
                   <details className="genome-explorer__sensors" open>
-                    <summary>Сенсоры на старте прогона</summary>
+                    <summary>Сенсоры на старте ({activeRun.initialSensors.length})</summary>
                     <div className="genome-explorer__sensor-grid">
                       {activeRun.initialSensors.map((s) => (
-                        <div key={s.name} className="genome-explorer__sensor" title={disasmLineHelp(`SENSE ${s.name}`)}>
+                        <div
+                          key={s.name}
+                          className="genome-explorer__sensor"
+                          title={disasmLineHelp(`SENSE ${s.name}`)}
+                        >
                           <span className="genome-explorer__sensor-name">{s.name}</span>
                           <span className="genome-explorer__sensor-val">{s.value.toFixed(3)}</span>
                         </div>
@@ -251,11 +344,7 @@ export default function GenomeExplorerScreen({
                   </details>
 
                   <div className="genome-explorer__step-controls">
-                    <button
-                      type="button"
-                      disabled={stepIndex <= 0}
-                      onClick={() => setStepIndex(0)}
-                    >
+                    <button type="button" disabled={stepIndex <= 0} onClick={() => setStepIndex(0)}>
                       ⏮
                     </button>
                     <button
@@ -263,17 +352,17 @@ export default function GenomeExplorerScreen({
                       disabled={stepIndex <= 0}
                       onClick={() => setStepIndex((s) => Math.max(0, s - 1))}
                     >
-                      ◀ Шаг
+                      ◀
                     </button>
                     <span className="genome-explorer__step-counter">
-                      {stepIndex + 1} / {activeRun.steps.length}
+                      шаг {stepIndex + 1} / {activeRun.steps.length}
                     </span>
                     <button
                       type="button"
                       disabled={stepIndex >= maxStep}
                       onClick={() => setStepIndex((s) => Math.min(maxStep, s + 1))}
                     >
-                      Шаг ▶
+                      ▶
                     </button>
                     <button
                       type="button"
@@ -291,78 +380,25 @@ export default function GenomeExplorerScreen({
                     </button>
                   </div>
 
-                  {currentStep && (
-                    <div className="genome-explorer__step-detail">
-                      <div className="genome-explorer__step-op">
-                        <span
-                          className="genome-explorer__step-text"
-                          title={disasmLineHelp(currentStep.text)}
-                        >
-                          {currentStep.text}
-                        </span>
-                        {currentStep.ip >= 0 && (
-                          <span className="genome-explorer__step-ip">ip={currentStep.ip}</span>
-                        )}
-                      </div>
-                      <div className="genome-explorer__step-note">{currentStep.note}</div>
-                      <div className="genome-explorer__step-stack">
-                        <span>DIR: {currentStep.dir}</span>
-                        <span>
-                          Стек: {formatStack(currentStep.stackBefore)} →{' '}
-                          {formatStack(currentStep.stackAfter)}
-                        </span>
-                      </div>
-                      {currentStep.skippedNext && (
-                        <div className="genome-explorer__step-flag">Пропущена следующая инструкция (IF)</div>
-                      )}
-                      {currentStep.structuralAttempt && (
-                        <div
-                          className={
-                            currentStep.structuralSuccess
-                              ? 'genome-explorer__step-flag genome-explorer__step-flag--ok'
-                              : 'genome-explorer__step-flag genome-explorer__step-flag--fail'
-                          }
-                        >
-                          {currentStep.structuralSuccess
-                            ? 'Структурное действие выполнено'
-                            : 'Структурное действие не прошло'}
-                        </div>
-                      )}
-                      {currentStep.runEnded && (
-                        <div className="genome-explorer__step-flag genome-explorer__step-flag--end">
-                          Прогон завершён
-                        </div>
-                      )}
-                    </div>
-                  )}
+                  {currentStep && <StepDetailCard step={currentStep} />}
 
-                  <ol className="genome-explorer__step-log">
-                    {activeRun.steps.map((step, i) => (
-                      <li
-                        key={step.stepIndex}
-                        className={
-                          i === stepIndex
-                            ? 'genome-explorer__step-log-item genome-explorer__step-log-item--active'
-                            : 'genome-explorer__step-log-item'
-                        }
-                      >
-                        <button
-                          type="button"
-                          className="genome-explorer__step-log-btn"
-                          onClick={() => {
+                  <div className="genome-explorer__step-log-wrap">
+                    <h3 className="genome-explorer__step-log-title">Журнал шагов</h3>
+                    <ol className="genome-explorer__step-log">
+                      {activeRun.steps.map((step, i) => (
+                        <StepLogItem
+                          key={step.stepIndex}
+                          step={step}
+                          active={i === stepIndex}
+                          onSelect={() => {
                             setStepIndex(i)
                             setAutoPlay(false)
                           }}
-                          title={disasmLineHelp(step.text)}
-                        >
-                          <span className="genome-explorer__step-log-num">{i + 1}</span>
-                          <span className="genome-explorer__step-log-text">{step.text}</span>
-                          <span className="genome-explorer__step-log-note">{step.note}</span>
-                        </button>
-                      </li>
-                    ))}
-                  </ol>
-                </>
+                        />
+                      ))}
+                    </ol>
+                  </div>
+                </div>
               )}
             </>
           )}
@@ -372,7 +408,69 @@ export default function GenomeExplorerScreen({
   )
 }
 
-function formatStack(stack: number[]): string {
-  if (stack.length === 0) return '[]'
-  return `[${stack.map((v) => v.toFixed(2)).join(', ')}]`
+function StepDetailCard({ step }: { step: VmStepTrace }) {
+  return (
+    <div className="genome-explorer__step-detail">
+      <div className="genome-explorer__step-detail-head">
+        <code className="genome-explorer__step-text">{step.text}</code>
+        {step.ip >= 0 && <span className="genome-explorer__step-ip">ip = {step.ip}</span>}
+      </div>
+      <p className="genome-explorer__step-human">{disasmLineHuman(step.text)}</p>
+      <pre className="genome-explorer__step-summary">{vmStepSummary(step)}</pre>
+      <div className="genome-explorer__step-flags">
+        {step.skippedNext && (
+          <span className="genome-explorer__step-flag">IF → пропуск</span>
+        )}
+        {step.structuralAttempt && (
+          <span
+            className={
+              step.structuralSuccess
+                ? 'genome-explorer__step-flag genome-explorer__step-flag--ok'
+                : 'genome-explorer__step-flag genome-explorer__step-flag--fail'
+            }
+          >
+            {step.structuralSuccess ? 'Действие OK' : 'Действие FAIL'}
+          </span>
+        )}
+        {step.runEnded && (
+          <span className="genome-explorer__step-flag genome-explorer__step-flag--end">
+            Конец прогона
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function StepLogItem({
+  step,
+  active,
+  onSelect,
+}: {
+  step: VmStepTrace
+  active: boolean
+  onSelect: () => void
+}) {
+  return (
+    <li
+      className={
+        active
+          ? 'genome-explorer__step-log-item genome-explorer__step-log-item--active'
+          : 'genome-explorer__step-log-item'
+      }
+    >
+      <button type="button" className="genome-explorer__step-log-btn" onClick={onSelect}>
+        <div className="genome-explorer__step-log-head">
+          <span className="genome-explorer__step-log-num">{step.stepIndex + 1}</span>
+          <code className="genome-explorer__step-log-text">{step.text}</code>
+          {step.ip >= 0 && <span className="genome-explorer__step-log-ip">ip={step.ip}</span>}
+        </div>
+        <div className="genome-explorer__step-log-human">{disasmLineHuman(step.text)}</div>
+        <div className="genome-explorer__step-log-note">{step.note}</div>
+        <div className="genome-explorer__step-log-stack">
+          DIR {step.dir} · стек {formatStack(step.stackBefore)} → {formatStack(step.stackAfter)}
+        </div>
+      </button>
+    </li>
+  )
 }

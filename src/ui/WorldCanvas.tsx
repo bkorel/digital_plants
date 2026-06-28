@@ -1,15 +1,19 @@
-import { useEffect, useRef, useState, type MutableRefObject } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { recordDraw } from '../dev/perfProbe'
-import { CAP, SEED_FALL_DURATION_MS, WORLD } from '../sim/config'
-import { genomeColor } from '../sim/genome'
-import { mineralColorCss, getMineralAt } from '../sim/environment'
-import type { AppMode, CellType, Plant } from '../sim/types'
+import { SEED_FALL_DURATION_MS, SEED_FALL_DURATION_TICKS, WORLD } from '../sim/config'
+import type { AppMode, CellType } from '../sim/types'
 import type { ViewMode } from '../sim/types'
 import type { World } from '../sim/world'
 import { drawPlantTraceEvents } from './traceDraw'
 import PlantInspectOverlay from './PlantInspectOverlay'
-
-type PlantDrawState = 'normal' | 'dimmed' | 'selected'
+import {
+  blitPixelGrid,
+  buildPlantsPixelLayerInto,
+  fillSkyPixels,
+  fillSoilPixels,
+  getPixelLayer,
+  type PixelLayerCache,
+} from './worldPixelGrid'
 
 interface Props {
   world: World
@@ -32,10 +36,6 @@ function hsl(h: number, s: number, l: number): string {
   return `hsl(${h} ${s}% ${l}%)`
 }
 
-function mineralColor(m: number): string {
-  return mineralColorCss(m)
-}
-
 function anatomyColor(type: CellType, dimmed: boolean, selected: boolean): string {
   switch (type) {
     case 'ROOT':
@@ -51,14 +51,18 @@ function anatomyColor(type: CellType, dimmed: boolean, selected: boolean): strin
   }
 }
 
-/** В почве меристема отображается как корень (правило мира). */
-function anatomyTissueType(cell: { type: CellType; y: number }): CellType {
-  if (cell.type === 'SPROUT' && cell.y >= WORLD.SOIL_Y) return 'ROOT'
-  return cell.type
-}
-
 function fallEase(t: number): number {
   return t * (2 - t)
+}
+
+/** Прогресс падения семени: тики + сглаживание по времени между кадрами. */
+function fallingSeedProgress(
+  seed: { startTick: number; startTime: number },
+  tickCount: number,
+): number {
+  const tickT = (tickCount - seed.startTick) / SEED_FALL_DURATION_TICKS
+  const timeT = (performance.now() - seed.startTime) / SEED_FALL_DURATION_MS
+  return fallEase(Math.min(1, Math.max(tickT, timeT)))
 }
 
 interface ViewportFit {
@@ -85,69 +89,6 @@ function computeViewport(containerW: number, containerH: number): ViewportFit {
     displayW,
     displayH,
   }
-}
-
-interface CachedLayer {
-  canvas: HTMLCanvasElement
-  key: string
-}
-
-function buildSoilLayer(
-  ctx: CanvasRenderingContext2D,
-  world: World,
-  viewMode: ViewMode,
-  cellSize: number,
-): void {
-  for (let y = WORLD.SOIL_Y; y < WORLD.H; y++) {
-    for (let x = 0; x < WORLD.W; x++) {
-      const px = x * cellSize
-      const py = y * cellSize
-      if (viewMode === 'ENERGY') {
-        ctx.fillStyle = mineralColor(getMineralAt(world.minerals, x, y))
-      } else {
-        const depth = (y - WORLD.SOIL_Y) / (WORLD.H - WORLD.SOIL_Y)
-        ctx.fillStyle = hsl(30, 25, 12 + depth * 18)
-      }
-      ctx.fillRect(px, py, cellSize, cellSize)
-    }
-  }
-}
-
-function buildSkyLayer(
-  ctx: CanvasRenderingContext2D,
-  world: World,
-  cellSize: number,
-): void {
-  for (let y = 0; y < WORLD.SOIL_Y; y++) {
-    for (let x = 0; x < WORLD.W; x++) {
-      const px = x * cellSize
-      const py = y * cellSize
-      const light = world.light[y * WORLD.W + x]
-      ctx.fillStyle = hsl(200, 30, 8 + light * 12)
-      ctx.fillRect(px, py, cellSize, cellSize)
-    }
-  }
-}
-
-function getCachedLayer(
-  cacheRef: MutableRefObject<CachedLayer | null>,
-  key: string,
-  w: number,
-  h: number,
-  paint: (ctx: CanvasRenderingContext2D) => void,
-): HTMLCanvasElement {
-  const cached = cacheRef.current
-  if (cached && cached.key === key && cached.canvas.width === w && cached.canvas.height === h) {
-    return cached.canvas
-  }
-  const canvas = document.createElement('canvas')
-  canvas.width = w
-  canvas.height = h
-  const ctx = canvas.getContext('2d')
-  if (!ctx) return canvas
-  paint(ctx)
-  cacheRef.current = { canvas, key }
-  return canvas
 }
 
 function drawSeedMarker(
@@ -185,8 +126,11 @@ export default function WorldCanvas({
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const soilLayerRef = useRef<CachedLayer | null>(null)
-  const skyLayerRef = useRef<CachedLayer | null>(null)
+  const soilLayerRef = useRef<PixelLayerCache | null>(null)
+  const skyLayerRef = useRef<PixelLayerCache | null>(null)
+  const plantsGridRef = useRef<HTMLCanvasElement | null>(null)
+  const plantsGridCtxRef = useRef<CanvasRenderingContext2D | null>(null)
+  const plantsImageDataRef = useRef<ImageData | null>(null)
   const drawRef = useRef<(() => void) | null>(null)
   const [viewport, setViewport] = useState<ViewportFit>(() => computeViewport(1, 1))
   const { cellSize, displayW, displayH } = viewport
@@ -247,26 +191,23 @@ export default function WorldCanvas({
       canvas.height = h
       soilLayerRef.current = null
       skyLayerRef.current = null
+      plantsImageDataRef.current = null
     }
-
-    ctx.fillStyle = '#0a100a'
-    ctx.fillRect(0, 0, w, h)
 
     const soilKey =
       viewMode === 'ENERGY'
-        ? `${cellSize}:${viewMode}:${frame}`
-        : `${cellSize}:${viewMode}`
-    const soilCanvas = getCachedLayer(soilLayerRef, soilKey, w, h, (sctx) =>
-      buildSoilLayer(sctx, world, viewMode, cellSize),
-    )
-    ctx.drawImage(soilCanvas, 0, 0)
+        ? `${viewMode}:${frame}`
+        : `${viewMode}`
+    const soilCanvas = getPixelLayer(soilLayerRef, soilKey, (pixels) => {
+      fillSoilPixels(pixels, world, viewMode)
+    })
+    blitPixelGrid(ctx, soilCanvas, w, h)
 
-    const skyKey = `${cellSize}:${frame}`
-    const skyCanvas = getCachedLayer(skyLayerRef, skyKey, w, h, (sctx) =>
-      buildSkyLayer(sctx, world, cellSize),
-    )
-    ctx.drawImage(skyCanvas, 0, 0)
-
+    const skyKey = `${Math.floor(frame / 4)}`
+    const skyCanvas = getPixelLayer(skyLayerRef, skyKey, (pixels) => {
+      fillSkyPixels(pixels, world)
+    })
+    blitPixelGrid(ctx, skyCanvas, w, h)
 
     const hasSelection = selectedPlantId != null
     const showTrace = viewMode === 'TRACE' && selectedPlantId != null
@@ -276,79 +217,48 @@ export default function WorldCanvas({
       ctx.fillRect(0, 0, w, h)
     }
 
-    const drawPlantCell = (plant: Plant, drawState: PlantDrawState) => {
-      const color = genomeColor(plant.genome)
-      const dimmed = drawState === 'dimmed'
-      const selected = drawState === 'selected'
-
-      for (const cell of plant.cells) {
-        const px = cell.x * cellSize
-        const py = cell.y * cellSize
-
-        if (viewMode === 'ANATOMY' || viewMode === 'TRACE') {
-          const fill = anatomyColor(anatomyTissueType(cell), dimmed, selected)
-          if (cell.type === 'SEED') {
-            drawSeedMarker(ctx, px, py, cellSize, fill)
-          } else {
-            ctx.fillStyle = fill
-            ctx.fillRect(px, py, cellSize, cellSize)
-          }
-        } else if (viewMode === 'PLANTS') {
-          const sat = selected ? color.sat + 25 : dimmed ? 18 : color.sat
-          const light = (selected ? color.light + 12 : dimmed ? color.light * 0.35 : color.light)
-          const fill = hsl(color.hue, sat, Math.min(85, light))
-          if (cell.type === 'SEED') {
-            drawSeedMarker(ctx, px, py, cellSize, fill)
-          } else {
-            ctx.fillStyle = fill
-            ctx.fillRect(px, py, cellSize, cellSize)
-          }
-        } else if (viewMode === 'ENERGY') {
-          const t = Math.min(1, cell.cellEnergy / CAP[cell.type])
-          const hueE = 45 - t * 45
-          const light = (15 + t * 55) * (dimmed ? 0.3 : selected ? 1.2 : 1)
-          const sat = dimmed ? 30 : selected ? 90 : 80
-          const fill = hsl(hueE, sat, Math.min(90, light))
-          if (cell.type === 'SEED') {
-            drawSeedMarker(ctx, px, py, cellSize, fill)
-          } else {
-            ctx.fillStyle = fill
-            ctx.fillRect(px, py, cellSize, cellSize)
-          }
-        } else {
-          const sat = dimmed ? 15 : selected ? color.sat + 10 : color.sat - 8
-          const light = dimmed ? color.light * 0.25 : selected ? color.light * 0.85 : color.light * 0.6
-          const fill = hsl(color.hue, sat, light)
-          if (cell.type === 'SEED') {
-            drawSeedMarker(ctx, px, py, cellSize, fill)
-          } else {
-            ctx.fillStyle = fill
-            ctx.fillRect(px, py, cellSize, cellSize)
-          }
-        }
-
-        if (selected && cell.type !== 'SEED') {
-          ctx.strokeStyle = '#ffffffcc'
-          ctx.lineWidth = 1.5
-          ctx.strokeRect(px + 0.5, py + 0.5, cellSize - 1, cellSize - 1)
-        }
+    let plantsCanvas = plantsGridRef.current
+    if (!plantsCanvas) {
+      plantsCanvas = document.createElement('canvas')
+      plantsCanvas.width = WORLD.W
+      plantsCanvas.height = WORLD.H
+      plantsGridRef.current = plantsCanvas
+      plantsGridCtxRef.current = plantsCanvas.getContext('2d')
+    }
+    const pgCtx = plantsGridCtxRef.current
+    if (pgCtx) {
+      if (!plantsImageDataRef.current) {
+        plantsImageDataRef.current = pgCtx.createImageData(WORLD.W, WORLD.H)
       }
+      const imageData = plantsImageDataRef.current
+      const gridPixels = new Uint32Array(imageData.data.buffer)
+      buildPlantsPixelLayerInto(
+        gridPixels,
+        world,
+        viewMode,
+        selectedPlantId,
+        showTrace,
+      )
+      pgCtx.putImageData(imageData, 0, 0)
+      blitPixelGrid(ctx, plantsCanvas, w, h)
     }
 
     const alive = world.plants.filter((p) => !p.dead)
-    for (const plant of alive) {
-      if (showTrace && plant.id === selectedPlantId) continue
-      if (hasSelection && plant.id === selectedPlantId) continue
-      drawPlantCell(plant, hasSelection || showTrace ? 'dimmed' : 'normal')
-    }
 
     if (showTrace || hasSelection) {
       const selected = alive.find((p) => p.id === selectedPlantId)
       if (selected) {
-        drawPlantCell(selected, 'selected')
-
         if (showTrace) {
           drawPlantTraceEvents(ctx, world.tickEvents, selectedPlantId, cellSize)
+        }
+
+        for (const cell of selected.cells) {
+          if (cell.type === 'SEED') continue
+          const px = cell.x * cellSize
+          const py = cell.y * cellSize
+          ctx.strokeStyle = '#ffffffcc'
+          ctx.lineWidth = 1.5
+          ctx.strokeRect(px + 0.5, py + 0.5, cellSize - 1, cellSize - 1)
         }
 
         let minX: number = WORLD.W
@@ -412,8 +322,7 @@ export default function WorldCanvas({
     }
 
     for (const seed of world.fallingSeeds) {
-      const elapsed = performance.now() - seed.startTime
-      const t = fallEase(Math.min(1, elapsed / SEED_FALL_DURATION_MS))
+      const t = fallingSeedProgress(seed, world.tickCount)
       const drawY = seed.fromY + (seed.toY - seed.fromY) * t
       const px = seed.x * cellSize
       const py = drawY * cellSize

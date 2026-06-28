@@ -40,10 +40,20 @@ import {
   decodeLiteral,
   decodeOp,
   decodeSensor,
+  decodeStructuralDir,
+  formatStructuralArg,
+  formatWhenArg,
   genomeMaxAge,
   genomeSeedReserve,
   genomeDoubleGrowth,
+  isStructuralGoto,
   opArgCount,
+  passesWhen,
+  readPrevFailSensor,
+  readPrevOkSensor,
+  structuralGotoIp,
+  WHEN_PREV_FAIL,
+  WHEN_PREV_OK,
   type OpName,
   type SensorName,
 } from './genome'
@@ -250,6 +260,7 @@ export function readSensorValue(
   light: Float32Array,
   minerals: Float32Array,
   rng: Rng,
+  lastActionOk: boolean | null = cell.lastActionOk ?? null,
 ): number {
   switch (sensor) {
     case 'ENERGY':
@@ -297,6 +308,10 @@ export function readSensorValue(
     }
     case 'CROWD_ABOVE':
       return normalizedCrowdAbove(occupancy, plant.id, cell.x, cell.y)
+    case 'PREV_OK':
+      return readPrevOkSensor(lastActionOk)
+    case 'PREV_FAIL':
+      return readPrevFailSensor(lastActionOk)
   }
 }
 
@@ -313,14 +328,21 @@ function potential(cell: PlantCell): number {
 }
 
 export function transportEnergy(plant: Plant): void {
-  const flows: { from: PlantCell; to: PlantCell; amount: number }[] = []
-  const seen = new Set<string>()
+  const cells = plant.cells
+  const posMap = new Map<number, PlantCell>()
+  for (const c of cells) {
+    posMap.set(c.y * WORLD.W + c.x, c)
+  }
 
-  for (const a of plant.cells) {
-    for (const b of neighborsOf(plant, a)) {
-      const key = a.id < b.id ? `${a.id}-${b.id}` : `${b.id}-${a.id}`
-      if (seen.has(key)) continue
-      seen.add(key)
+  const flows: { from: PlantCell; to: PlantCell; amount: number }[] = []
+
+  for (const a of cells) {
+    for (const [dx, dy] of [
+      [1, 0],
+      [0, 1],
+    ] as const) {
+      const b = posMap.get((a.y + dy) * WORLD.W + (a.x + dx))
+      if (!b) continue
 
       const potA = potential(a)
       const potB = potential(b)
@@ -525,19 +547,49 @@ function snapshotSensors(
     'SHADE_DIR',
     'MINERAL_DIR',
     'CROWD_ABOVE',
+    'PREV_OK',
+    'PREV_FAIL',
   ]
+  const lastActionOk = cell.lastActionOk ?? null
   return names.map((name) => ({
     name,
-    value: readSensorValue(name, plant, cell, dir, occupancy, light, minerals, rng),
+    value: readSensorValue(name, plant, cell, dir, occupancy, light, minerals, rng, lastActionOk),
   }))
 }
 
-function formatInstrText(op: OpName, arg: number): string {
-  if (op === 'PUSH') return `PUSH ${decodeLiteral(arg).toFixed(2)}`
-  if (op === 'SENSE') return `SENSE ${decodeSensor(arg)}`
-  if (op === 'DIR') return `DIR ${decodeDir(arg)}`
-  if (op === 'SEED') return `SEED ${decodeLiteral(arg).toFixed(2)}`
+function formatInstrText(op: OpName, args: number[]): string {
+  const a0 = args[0] ?? 0
+  const a1 = args[1] ?? 0
+  if (op === 'PUSH') return `PUSH ${decodeLiteral(a0).toFixed(2)}`
+  if (op === 'SENSE') return `SENSE ${decodeSensor(a0)}`
+  if (op === 'DIR') return `DIR ${decodeDir(a0)}`
+  if (op === 'SEED') return `SEED ${decodeLiteral(a0).toFixed(2)} ${formatWhenArg(a1)}`
+  if (op === 'GROW') return `GROW ${formatWhenArg(a0)}`
+  if (op === 'BRANCH' || op === 'SPIKE' || op === 'SHOOT') {
+    return `${op} ${formatStructuralArg(a0)} ${formatWhenArg(a1)}`
+  }
   return op
+}
+
+function readInstrArgs(code: Uint8Array, ip: number, n: number): number[] {
+  return Array.from({ length: n }, (_, j) => readArg(code, ip, j))
+}
+
+function readArg(code: Uint8Array, ip: number, j: number): number {
+  const idx = ip + 1 + j
+  return idx < code.length ? code[idx]! : 0
+}
+
+/** BRANCH/SPIKE/SHOOT: WHERE + WHEN; WHERE %8===7 → GOTO после проверки WHEN. */
+function resolveStructuralWhere(
+  whereArg: number,
+  ip: number,
+  codeLength: number,
+): { kind: 'goto'; ip: number } | { kind: 'dir'; direction: Direction } {
+  if (isStructuralGoto(whereArg)) {
+    return { kind: 'goto', ip: structuralGotoIp(ip, whereArg, codeLength) }
+  }
+  return { kind: 'dir', direction: decodeStructuralDir(whereArg) ?? 'UP' }
 }
 
 function recordVmStep(
@@ -545,18 +597,19 @@ function recordVmStep(
   stepIndex: number,
   ip: number,
   opcode: OpName,
-  arg: number,
+  args: number[],
   dir: Direction,
   stackBefore: number[],
   stackAfter: number[],
   note: string,
   extra?: Partial<VmStepTrace>,
 ): number {
-  trace?.push({
+  if (!trace) return stepIndex
+  trace.push({
     stepIndex,
     ip,
     opcode,
-    text: formatInstrText(opcode, arg),
+    text: formatInstrText(opcode, args),
     dir,
     stackBefore: [...stackBefore],
     stackAfter: [...stackAfter],
@@ -703,19 +756,20 @@ function tryGrowMeristem(
   return spawnMeristem(cell, dir, ctx, growKind)
 }
 
+/** null — успех; иначе текст причины отказа (для трассировки VM). */
 function dropSeed(
   cell: PlantCell,
   dir: Direction,
   ctx: VMContext,
   energyFraction: number,
-): boolean {
+): string | null {
   const { plant, occupancy, newSeeds } = ctx
-  if (cell.y > WORLD.SOIL_Y - MIN_SEED_HEIGHT) return false
+  if (cell.y > WORLD.SOIL_Y - MIN_SEED_HEIGHT) return 'слишком низко для семени'
 
   const { dx, dy } = DIR_DELTA[dir]
   const nx = cell.x + dx
   const ny = cell.y + dy
-  if (!canPlace(occupancy, plant.id, nx, ny, dir)) return false
+  if (!canPlace(occupancy, plant.id, nx, ny, dir)) return 'нет места для семени'
 
   const frac = Math.max(0, Math.min(1, energyFraction))
   const maxReserve = genomeSeedReserve(plant.genome)
@@ -760,7 +814,7 @@ function dropSeed(
       }
     }
   }
-  if (seedEnergy < SEED_MIN_PAYLOAD) return false
+  if (seedEnergy < SEED_MIN_PAYLOAD) return 'не хватает энергии на семя'
 
   let overhead = SEED_FORMATION_OVERHEAD
   const overheadSources = [
@@ -774,7 +828,7 @@ function dropSeed(
     if (overhead <= 0) break
     overhead -= takeFrom(src, overhead, 0.25)
   }
-  if (overhead > 0) return false
+  if (overhead > 0) return 'не хватает энергии на образование семени'
 
   for (const src of plant.cells) {
     const amount = deductions.get(src.id)
@@ -803,7 +857,7 @@ function dropSeed(
     fromX: cell.x,
     fromY: cell.y,
   })
-  return true
+  return null
 }
 
 function placeSpikeCell(
@@ -937,38 +991,72 @@ function runCellProgram(
   let traceStep = 0
   let attempted = false
   let actions = 0
+  /** Исход последнего структурного действия (включая прошлый прогон до первой попытки в этом) */
+  let lastActionOk: boolean | null = cell.lastActionOk ?? null
+
+  const tracing = trace !== undefined
+
+  const markStructural = (ok: boolean) => {
+    lastActionOk = ok
+    cell.lastActionOk = ok
+  }
+
+  const traceArgs = (argCount: number, a0: number, a1: number): number[] =>
+    argCount <= 1 ? [a0] : [a0, a1]
 
   const logStep = (
     opcode: OpName,
-    arg: number,
-    before: number[],
-    after: number[],
-    note: string,
+    argCount: number,
+    a0: number,
+    a1: number,
+    stackBefore: number[],
+    stackAfter: number[],
+    note: () => string,
     extra?: Partial<VmStepTrace>,
   ) => {
-    traceStep = recordVmStep(trace, traceStep, ip, opcode, arg, dir, before, after, note, extra)
+    if (!tracing) return
+    traceStep = recordVmStep(
+      trace,
+      traceStep,
+      ip,
+      opcode,
+      traceArgs(argCount, a0, a1),
+      dir,
+      stackBefore,
+      stackAfter,
+      note(),
+      extra,
+    )
+  }
+
+  const formatWhenNote = (whenArg: number): string => {
+    const stackVal = stack.length > 0 ? stack[stack.length - 1]! : 0
+    if (whenArg === WHEN_PREV_OK) return 'WHEN prev ok — не было успешного действия'
+    if (whenArg === WHEN_PREV_FAIL) return 'WHEN prev fail — предыдущее не провалилось'
+    return `WHEN не выполнено (${stackVal.toFixed(2)} < ${decodeLiteral(whenArg).toFixed(2)})`
   }
 
   while (steps < VM_STEP_BUDGET && ip < code.length) {
     steps++
     const op = decodeOp(code[ip])
-    const arg = ip + 1 < code.length ? code[ip + 1] : 0
-    const stackBefore = [...stack]
+    const a0 = readArg(code, ip, 0)
+    const a1 = readArg(code, ip, 1)
+    const stackBefore = tracing ? [...stack] : []
 
     switch (op) {
       case 'NOP':
-        logStep(op, arg, stackBefore, stack, 'Пустая операция')
+        logStep(op, 0, 0, 0, stackBefore, stack, () => 'Пустая операция')
         ip++
         break
       case 'PUSH': {
-        const val = decodeLiteral(arg)
+        const val = decodeLiteral(a0)
         stack.push(val)
-        logStep(op, arg, stackBefore, stack, `На стек: ${val.toFixed(2)}`)
+        logStep(op, 1, a0, 0, stackBefore, stack, () => `На стек: ${val.toFixed(2)}`)
         ip += 2
         break
       }
       case 'SENSE': {
-        const sensor = decodeSensor(arg)
+        const sensor = decodeSensor(a0)
         const val = readSensorValue(
           sensor,
           ctx.plant,
@@ -978,21 +1066,16 @@ function runCellProgram(
           ctx.light,
           ctx.minerals,
           ctx.rng,
+          lastActionOk,
         )
         stack.push(val)
-        logStep(
-          op,
-          arg,
-          stackBefore,
-          stack,
-          `SENSE ${sensor} → ${val.toFixed(3)}`,
-        )
+        logStep(op, 1, a0, 0, stackBefore, stack, () => `SENSE ${sensor} → ${val.toFixed(3)}`)
         ip += 2
         break
       }
       case 'DIR': {
-        dir = decodeDir(arg)
-        logStep(op, arg, stackBefore, stack, `Направление: ${dir}`)
+        dir = decodeDir(a0)
+        logStep(op, 1, a0, 0, stackBefore, stack, () => `Направление: ${dir}`)
         ip += 2
         break
       }
@@ -1001,13 +1084,7 @@ function runCellProgram(
         const b = stack.pop() ?? 0
         const result = b < a ? 1 : 0
         stack.push(result)
-        logStep(
-          op,
-          arg,
-          stackBefore,
-          stack,
-          `${b.toFixed(2)} < ${a.toFixed(2)} → ${result}`,
-        )
+        logStep(op, 0, 0, 0, stackBefore, stack, () => `${b.toFixed(2)} < ${a.toFixed(2)} → ${result}`)
         ip++
         break
       }
@@ -1016,13 +1093,7 @@ function runCellProgram(
         const b = stack.pop() ?? 0
         const result = b > a ? 1 : 0
         stack.push(result)
-        logStep(
-          op,
-          arg,
-          stackBefore,
-          stack,
-          `${b.toFixed(2)} > ${a.toFixed(2)} → ${result}`,
-        )
+        logStep(op, 0, 0, 0, stackBefore, stack, () => `${b.toFixed(2)} > ${a.toFixed(2)} → ${result}`)
         ip++
         break
       }
@@ -1031,13 +1102,7 @@ function runCellProgram(
         const b = stack.pop() ?? 0
         const result = a >= 0.5 && b >= 0.5 ? 1 : 0
         stack.push(result)
-        logStep(
-          op,
-          arg,
-          stackBefore,
-          stack,
-          `AND(${a.toFixed(2)}, ${b.toFixed(2)}) → ${result}`,
-        )
+        logStep(op, 0, 0, 0, stackBefore, stack, () => `AND(${a.toFixed(2)}, ${b.toFixed(2)}) → ${result}`)
         ip++
         break
       }
@@ -1046,114 +1111,92 @@ function runCellProgram(
         const b = stack.pop() ?? 0
         const result = a >= 0.5 || b >= 0.5 ? 1 : 0
         stack.push(result)
-        logStep(
-          op,
-          arg,
-          stackBefore,
-          stack,
-          `OR(${a.toFixed(2)}, ${b.toFixed(2)}) → ${result}`,
-        )
+        logStep(op, 0, 0, 0, stackBefore, stack, () => `OR(${a.toFixed(2)}, ${b.toFixed(2)}) → ${result}`)
         ip++
         break
       }
       case 'IF': {
         const v = stack.pop() ?? 0
-        if (v < 0.5 && ip < code.length) {
-          const skipOp = decodeOp(code[ip])
-          const skipLen = 1 + opArgCount(skipOp)
-          const skipText = formatInstrText(skipOp, ip + 1 < code.length ? code[ip + 1] : 0)
-          logStep(
-            op,
-            arg,
-            stackBefore,
-            stack,
-            `Условие ${v.toFixed(2)} < 0.5 — пропуск: ${skipText}`,
-            { skippedNext: true },
-          )
-          ip += skipLen
+        if (v < 0.5 && ip + 1 < code.length) {
+          const skipOp = decodeOp(code[ip + 1]!)
+          const skipArgN = opArgCount(skipOp)
+          if (tracing) {
+            const skipArgs = readInstrArgs(code, ip + 1, skipArgN)
+            const skipText = formatInstrText(skipOp, skipArgs)
+            logStep(
+              op,
+              0,
+              0,
+              0,
+              stackBefore,
+              stack,
+              () => `Условие ${v.toFixed(2)} < 0.5 — пропуск: ${skipText}`,
+              { skippedNext: true },
+            )
+          }
+          ip += 2 + skipArgN
         } else {
           logStep(
             op,
-            arg,
+            0,
+            0,
+            0,
             stackBefore,
             stack,
-            `Условие ${v.toFixed(2)} ≥ 0.5 — выполняем следующую инструкцию`,
+            () => `Условие ${v.toFixed(2)} ≥ 0.5 — выполняем следующую инструкцию`,
           )
           ip++
         }
         break
       }
       case 'GROW': {
+        const whenArg = a0
+        if (!passesWhen(stack, whenArg, lastActionOk)) {
+          logStep(op, 1, a0, 0, stackBefore, stack, () => formatWhenNote(whenArg))
+          ip += 2
+          break
+        }
         attempted = true
         if (tryGrowMeristem(cell, dir, ctx, 'GROW')) {
+          markStructural(true)
           matureParentAfterOffspring(cell, ctx.plant.id)
-          logStep(op, arg, stackBefore, stack, 'GROW успешен — родитель созрел', {
+          logStep(op, 1, a0, 0, stackBefore, stack, () => 'GROW успешен — родитель созрел', {
             structuralAttempt: true,
             structuralSuccess: true,
             runEnded: true,
           })
           return { actions: actions + 1, matured: true, attempted }
         }
-        logStep(op, arg, stackBefore, stack, 'GROW не прошёл (нет места, воды или энергии)', {
-          structuralAttempt: true,
-          structuralSuccess: false,
-        })
-        ip++
-        break
-      }
-      case 'BRANCH': {
-        attempted = true
-        if (tryGrowMeristem(cell, dir, ctx, 'BRANCH')) {
-          cell.dir = dir
-          cell.waitingForGrow = false
-          actions++
-          logStep(op, arg, stackBefore, stack, `BRANCH успешен (${actions}/${maxActions})`, {
-            structuralAttempt: true,
-            structuralSuccess: true,
-            runEnded: actions >= maxActions,
-          })
-          if (actions >= maxActions) {
-            return { actions, matured: false, attempted }
-          }
-          ip++
-          break
-        }
-        logStep(op, arg, stackBefore, stack, 'BRANCH не прошёл', {
-          structuralAttempt: true,
-          structuralSuccess: false,
-        })
-        ip++
-        break
-      }
-      case 'SEED': {
-        attempted = true
-        const seedFrac = decodeLiteral(arg)
-        if (dropSeed(cell, dir, ctx, seedFrac)) {
-          cell.waitingForGrow = false
-          logStep(
-            op,
-            arg,
-            stackBefore,
-            stack,
-            `SEED успешен (доля ${seedFrac.toFixed(2)})`,
-            { structuralAttempt: true, structuralSuccess: true, runEnded: true },
-          )
-          return { actions: actions + 1, matured: false, attempted }
-        }
-        logStep(op, arg, stackBefore, stack, 'SEED не прошёл', {
+        markStructural(false)
+        logStep(op, 1, a0, 0, stackBefore, stack, () => 'GROW не прошёл (нет места, воды или энергии)', {
           structuralAttempt: true,
           structuralSuccess: false,
         })
         ip += 2
         break
       }
-      case 'SPIKE': {
+      case 'BRANCH': {
+        const whereArg = a0
+        const whenArg = a1
+        if (!passesWhen(stack, whenArg, lastActionOk)) {
+          logStep(op, 2, a0, a1, stackBefore, stack, () => formatWhenNote(whenArg))
+          ip += 3
+          break
+        }
+        const resolved = resolveStructuralWhere(whereArg, ip, code.length)
+        if (resolved.kind === 'goto') {
+          logStep(op, 2, a0, a1, stackBefore, stack, () => `GOTO ip → ${resolved.ip}`)
+          ip = resolved.ip
+          break
+        }
+        const actionDir = resolved.direction
         attempted = true
-        if (placeSpikeCell(cell, dir, ctx, 'SPIKE')) {
-          cell.dir = dir
+        if (tryGrowMeristem(cell, actionDir, ctx, 'BRANCH')) {
+          markStructural(true)
+          cell.dir = actionDir
           cell.waitingForGrow = false
           actions++
-          logStep(op, arg, stackBefore, stack, `SPIKE успешен (${actions}/${maxActions})`, {
+          logStep(op, 2, a0, a1, stackBefore, stack, () => `BRANCH ${actionDir} успешен (${actions}/${maxActions})`, {
             structuralAttempt: true,
             structuralSuccess: true,
             runEnded: actions >= maxActions,
@@ -1161,32 +1204,122 @@ function runCellProgram(
           if (actions >= maxActions) {
             return { actions, matured: false, attempted }
           }
-          ip++
+          ip += 3
           break
         }
-        logStep(op, arg, stackBefore, stack, 'SPIKE не прошёл', {
+        markStructural(false)
+        logStep(op, 2, a0, a1, stackBefore, stack, () => `BRANCH ${actionDir} не прошёл`, {
           structuralAttempt: true,
           structuralSuccess: false,
         })
-        ip++
+        ip += 3
+        break
+      }
+      case 'SEED': {
+        const seedFrac = decodeLiteral(a0)
+        const whenArg = a1
+        if (!passesWhen(stack, whenArg, lastActionOk)) {
+          logStep(op, 2, a0, a1, stackBefore, stack, () => formatWhenNote(whenArg))
+          ip += 3
+          break
+        }
+        attempted = true
+        const seedErr = dropSeed(cell, dir, ctx, seedFrac)
+        if (seedErr === null) {
+          markStructural(true)
+          cell.waitingForGrow = false
+          logStep(
+            op,
+            2,
+            a0,
+            a1,
+            stackBefore,
+            stack,
+            () => `SEED успешен (доля ${seedFrac.toFixed(2)})`,
+            { structuralAttempt: true, structuralSuccess: true, runEnded: true },
+          )
+          return { actions: actions + 1, matured: false, attempted }
+        }
+        markStructural(false)
+        logStep(op, 2, a0, a1, stackBefore, stack, () => `SEED не прошёл: ${seedErr}`, {
+          structuralAttempt: true,
+          structuralSuccess: false,
+        })
+        ip += 3
+        break
+      }
+      case 'SPIKE': {
+        const whereArg = a0
+        const whenArg = a1
+        if (!passesWhen(stack, whenArg, lastActionOk)) {
+          logStep(op, 2, a0, a1, stackBefore, stack, () => formatWhenNote(whenArg))
+          ip += 3
+          break
+        }
+        const resolved = resolveStructuralWhere(whereArg, ip, code.length)
+        if (resolved.kind === 'goto') {
+          logStep(op, 2, a0, a1, stackBefore, stack, () => `GOTO ip → ${resolved.ip}`)
+          ip = resolved.ip
+          break
+        }
+        const actionDir = resolved.direction
+        attempted = true
+        if (placeSpikeCell(cell, actionDir, ctx, 'SPIKE')) {
+          markStructural(true)
+          cell.dir = actionDir
+          cell.waitingForGrow = false
+          actions++
+          logStep(op, 2, a0, a1, stackBefore, stack, () => `SPIKE ${actionDir} успешен (${actions}/${maxActions})`, {
+            structuralAttempt: true,
+            structuralSuccess: true,
+            runEnded: actions >= maxActions,
+          })
+          if (actions >= maxActions) {
+            return { actions, matured: false, attempted }
+          }
+          ip += 3
+          break
+        }
+        markStructural(false)
+        logStep(op, 2, a0, a1, stackBefore, stack, () => `SPIKE ${actionDir} не прошёл`, {
+          structuralAttempt: true,
+          structuralSuccess: false,
+        })
+        ip += 3
         break
       }
       case 'SHOOT': {
+        const whereArg = a0
+        const whenArg = a1
+        if (!passesWhen(stack, whenArg, lastActionOk)) {
+          logStep(op, 2, a0, a1, stackBefore, stack, () => formatWhenNote(whenArg))
+          ip += 3
+          break
+        }
+        const resolved = resolveStructuralWhere(whereArg, ip, code.length)
+        if (resolved.kind === 'goto') {
+          logStep(op, 2, a0, a1, stackBefore, stack, () => `GOTO ip → ${resolved.ip}`)
+          ip = resolved.ip
+          break
+        }
+        const actionDir = resolved.direction
         attempted = true
-        if (shootSpike(cell, dir, ctx)) {
+        if (shootSpike(cell, actionDir, ctx)) {
+          markStructural(true)
           cell.waitingForGrow = false
-          logStep(op, arg, stackBefore, stack, 'SHOOT успешен — шип и мерistema за ним', {
+          logStep(op, 2, a0, a1, stackBefore, stack, () => `SHOOT ${actionDir} успешен — шип и мерistema за ним`, {
             structuralAttempt: true,
             structuralSuccess: true,
             runEnded: true,
           })
           return { actions: actions + 1, matured: false, attempted }
         }
-        logStep(op, arg, stackBefore, stack, 'SHOOT не прошёл', {
+        markStructural(false)
+        logStep(op, 2, a0, a1, stackBefore, stack, () => `SHOOT ${actionDir} не прошёл`, {
           structuralAttempt: true,
           structuralSuccess: false,
         })
-        ip++
+        ip += 3
         break
       }
     }

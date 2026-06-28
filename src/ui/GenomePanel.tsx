@@ -12,6 +12,7 @@ import {
   doubleGrowthLabel,
   shadeSenescenceLabel,
 } from '../sim/genome'
+import { disasmLineHuman } from '../sim/genomeHelp'
 import { SHADED_SPROUT_LAYERS, WORLD } from '../sim/config'
 import { plantEnergyRatio, plantTotalEnergy } from '../sim/plant'
 import type { AppMode, Genome, Plant, SavedGenome } from '../sim/types'
@@ -166,11 +167,14 @@ export default function GenomePanel({
         {lines.map((line) => (
           <div
             key={line.index}
-            className="gene-item"
-            style={line.structural ? { color: '#b8e0b0', fontWeight: 600 } : undefined}
+            className={`gene-item${line.structural ? ' gene-item--structural' : ''}`}
           >
-            <span style={{ color: '#6a7a6a' }}>{line.index.toString().padStart(3, ' ')}</span>{' '}
-            {line.text}
+            <div className="gene-item__row">
+              <span className="gene-item__ip">{line.index.toString().padStart(3, ' ')}</span>
+              <code className="gene-item__hex">{line.bytesHex}</code>
+              <span className="gene-item__text">{line.text}</span>
+            </div>
+            <div className="gene-item__human">{disasmLineHuman(line.text)}</div>
           </div>
         ))}
       </div>

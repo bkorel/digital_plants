@@ -6,8 +6,12 @@ import { Rng } from './rng'
  * Линейный геном-байткод и стек-машина роста.
  *
  * Геном — это просто массив байт. Каждый байт при исполнении превращается в
- * инструкцию: `опкод = байт % OPS.length`. Аргументы (для PUSH/SENSE/DIR)
- * берутся из следующего байта тем же приёмом. Поэтому ЛЮБАЯ случайная
+ * инструкцию: `опкод = байт % OPS.length`. Аргументы (PUSH/SENSE/DIR/SEED и
+ * BRANCH/SPIKE/SHOOT) берутся из следующих байт. Структурные команды —
+ * ACTION(WHERE, WHEN): WHERE задаёт направление (или GOTO), WHEN — порог
+ * встроенного IF (вершина стека ≥ decodeLiteral(WHEN)). `DIR` — только для
+ * GROW/SEED (WHERE) и сенсоров по DIR.
+ * Поэтому ЛЮБАЯ случайная
  * последовательность байт — корректная программа, а мутации никогда не ломают
  * структуру (нет указателей, которые надо чинить).
  *
@@ -53,6 +57,10 @@ export const SENSORS = [
   'MINERAL_DIR',
   /** Доля чужих растений на 1 клетку выше в полосе ±CROWD_ABOVE_X_RADIUS по X */
   'CROWD_ABOVE',
+  /** 1 — предыдущее структурное действие успешно; 0 — неуспешно или не было */
+  'PREV_OK',
+  /** 1 — предыдущее структурное действие неуспешно; 0 — успешно или не было */
+  'PREV_FAIL',
 ] as const
 export type SensorName = (typeof SENSORS)[number]
 export const SENSOR_COUNT = SENSORS.length
@@ -75,7 +83,84 @@ export function isStructuralOp(op: OpName): boolean {
 
 /** Сколько байт-аргументов потребляет инструкция после своего байта */
 export function opArgCount(op: OpName): number {
-  return op === 'PUSH' || op === 'SENSE' || op === 'DIR' || op === 'SEED' ? 1 : 0
+  if (op === 'PUSH' || op === 'SENSE' || op === 'DIR') return 1
+  if (op === 'GROW') return 1
+  if (op === 'SEED') return 2
+  if (op === 'BRANCH' || op === 'SPIKE' || op === 'SHOOT') return 2
+  return 0
+}
+
+/** WHEN: проверка «предыдущее действие успешно» (стек игнорируется) */
+export const WHEN_PREV_OK = 250
+/** WHEN: проверка «предыдущее действие неуспешно» (стек игнорируется) */
+export const WHEN_PREV_FAIL = 251
+
+export function readPrevOkSensor(lastActionOk: boolean | null): number {
+  return lastActionOk === true ? 1 : 0
+}
+
+export function readPrevFailSensor(lastActionOk: boolean | null): number {
+  return lastActionOk === false ? 1 : 0
+}
+
+/** Встроенный IF: стек ≥ порога, либо WHEN prev ok/fail */
+export function passesWhen(
+  stack: number[],
+  whenByte: number,
+  lastActionOk: boolean | null,
+): boolean {
+  if (whenByte === WHEN_PREV_OK) return lastActionOk === true
+  if (whenByte === WHEN_PREV_FAIL) return lastActionOk === false
+  const v = stack.length > 0 ? stack[stack.length - 1]! : 0
+  return v >= decodeLiteral(whenByte)
+}
+
+export function formatWhenArg(byte: number): string {
+  if (byte === WHEN_PREV_OK) return 'WHEN prev ok'
+  if (byte === WHEN_PREV_FAIL) return 'WHEN prev fail'
+  return `WHEN≥${decodeLiteral(byte).toFixed(2)}`
+}
+
+/** BRANCH/SPIKE/SHOOT WHERE: %8 → 0–1 UP, 2 DOWN, 3–4 LEFT, 5–6 RIGHT, 7 GOTO */
+export function formatStructuralArg(byte: number): string {
+  const mode = byte % 8
+  if (mode <= 1) return 'UP'
+  if (mode === 2) return 'DOWN'
+  if (mode <= 4) return 'LEFT'
+  if (mode <= 6) return 'RIGHT'
+  return `GOTO +${byte}`
+}
+
+export function isStructuralGoto(byte: number): boolean {
+  return byte % 8 === 7
+}
+
+export function structuralGotoIp(ip: number, whereArg: number, codeLength: number): number {
+  if (codeLength <= 0) return 0
+  return (ip + 2 + whereArg) % codeLength
+}
+
+/** Направление из аргумента BRANCH/SPIKE/SHOOT; null — режим GOTO (%8===7) */
+export function decodeStructuralDir(byte: number): Direction | null {
+  const mode = byte % 8
+  if (mode <= 1) return 'UP'
+  if (mode === 2) return 'DOWN'
+  if (mode <= 4) return 'LEFT'
+  if (mode <= 6) return 'RIGHT'
+  return null
+}
+
+export function encodeStructuralDir(d: 'UP' | 'DOWN' | 'LEFT' | 'RIGHT'): number {
+  switch (d) {
+    case 'UP':
+      return 0
+    case 'DOWN':
+      return 2
+    case 'LEFT':
+      return 3
+    case 'RIGHT':
+      return 5
+  }
 }
 
 export function decodeOp(byte: number): OpName {
@@ -128,6 +213,10 @@ export interface DisasmLine {
   index: number
   text: string
   structural: boolean
+  /** Сколько байт занимает инструкция (опкод + аргументы) */
+  byteLength: number
+  /** Hex байтов инструкции, напр. `08 a3 32` */
+  bytesHex: string
 }
 
 export function disassemble(genome: Genome): DisasmLine[] {
@@ -135,16 +224,26 @@ export function disassemble(genome: Genome): DisasmLine[] {
   const lines: DisasmLine[] = []
   let i = 0
   while (i < code.length) {
-    const op = decodeOp(code[i])
+    const op = decodeOp(code[i]!)
     let text: string = op
     const argN = opArgCount(op)
-    const arg = argN > 0 && i + 1 < code.length ? code[i + 1] : 0
-    if (op === 'PUSH') text = `PUSH ${decodeLiteral(arg).toFixed(2)}`
-    else if (op === 'SENSE') text = `SENSE ${decodeSensor(arg)}`
-    else if (op === 'DIR') text = `DIR ${decodeDir(arg)}`
-    else if (op === 'SEED') text = `SEED ${decodeLiteral(arg).toFixed(2)}`
-    lines.push({ index: i, text, structural: isStructuralOp(op) })
-    i += 1 + argN
+    const byteLength = 1 + argN
+    const slice = code.slice(i, i + byteLength)
+    const bytesHex = Array.from(slice)
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join(' ')
+    const a0 = argN > 0 && i + 1 < code.length ? code[i + 1]! : 0
+    const a1 = argN > 1 && i + 2 < code.length ? code[i + 2]! : 0
+    if (op === 'PUSH') text = `PUSH ${decodeLiteral(a0).toFixed(2)}`
+    else if (op === 'SENSE') text = `SENSE ${decodeSensor(a0)}`
+    else if (op === 'DIR') text = `DIR ${decodeDir(a0)}`
+    else if (op === 'SEED') text = `SEED ${decodeLiteral(a0).toFixed(2)} ${formatWhenArg(a1)}`
+    else if (op === 'GROW') text = `GROW ${formatWhenArg(a0)}`
+    else if (op === 'BRANCH' || op === 'SPIKE' || op === 'SHOOT') {
+      text = `${op} ${formatStructuralArg(a0)} ${formatWhenArg(a1)}`
+    }
+    lines.push({ index: i, text, structural: isStructuralOp(op), byteLength, bytesHex })
+    i += byteLength
   }
   return lines
 }
@@ -256,6 +355,9 @@ function metaSuffix(opts: { doubleGrow?: boolean; shade: ShadeSenescenceMode }):
 const OP = (name: OpName): number => OPS.indexOf(name)
 const SENS = (name: SensorName): number => SENSORS.indexOf(name)
 const DIRB = (d: Direction): number => DIRECTIONS.indexOf(d)
+const SD = (d: 'UP' | 'DOWN' | 'LEFT' | 'RIGHT'): number => encodeStructuralDir(d)
+/** Порог встроенного WHEN (стек ≥ значение); по умолчанию 0.5 как у IF */
+const WHEN = (t = 0.5): number => LIT(t)
 const LIT = (v: number): number => Math.round(clamp01(v) * 100)
 
 /** Удобный сборщик байткода из читаемых токенов */
@@ -308,63 +410,61 @@ function viableTemplateGenome(rng: Rng): Genome {
 
   const code: number[] = asm([
     // якорь у поверхности — нужен для опоры перед ростом в воздух
-    OP('DIR'), DIRB('DOWN'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.03), OP('LT'),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.04), OP('LT'),
-    OP('AND'), OP('IF'),
-    OP('BRANCH'),
+    OP('AND'),
+    OP('BRANCH'), SD('DOWN'), WHEN(0.5),
     // первый побег в воздух (низкая высота — один раз выйти из почвы)
     OP('DIR'), DIRB('UP'),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.03), OP('LT'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.03), OP('LT'),
-    OP('AND'), OP('IF'),
-    OP('GROW'),
+    OP('AND'),
+    OP('GROW'), WHEN(0.5),
     // главный корень вниз
     OP('DIR'), DIRB('DOWN'),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.01), OP('LT'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.04), OP('GT'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(depthThr), OP('LT'),
-    OP('AND'), OP('AND'), OP('IF'),
-    OP('GROW'),
+    OP('AND'), OP('AND'),
+    OP('GROW'), WHEN(0.5),
     // боковые корни — после стержневого
     OP('DIR'), DIRB('LEFT'),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.01), OP('LT'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.05), OP('GT'),
     OP('SENSE'), SENS('RANDOM'), OP('PUSH'), LIT(rootBranchP), OP('LT'),
-    OP('AND'), OP('AND'), OP('IF'),
-    OP('BRANCH'),
-    OP('DIR'), DIRB('RIGHT'),
+    OP('AND'), OP('AND'),
+    OP('BRANCH'), SD('LEFT'), WHEN(0.5),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.01), OP('LT'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.05), OP('GT'),
     OP('SENSE'), SENS('RANDOM'), OP('PUSH'), LIT(rootBranchP), OP('LT'),
-    OP('AND'), OP('AND'), OP('IF'),
-    OP('BRANCH'),
+    OP('AND'), OP('AND'),
+    OP('BRANCH'), SD('RIGHT'), WHEN(0.5),
     // семя — до продолжения роста вверх (иначе GROW съедает прогон каждый тик)
     OP('DIR'), DIRB('UP'),
     OP('SENSE'), SENS('ENERGY'), OP('PUSH'), LIT(seedEnergyThr), OP('GT'),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(seedHeight), OP('GT'),
-    OP('AND'), OP('IF'),
-    OP('SEED'), LIT(0.28),
+    OP('AND'),
+    OP('SEED'), LIT(0.28), WHEN(0.5),
     // повторное семя на кроне — когда рост вверх уже не нужен
     OP('DIR'), DIRB('UP'),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.15), OP('GT'),
     OP('SENSE'), SENS('ENERGY'), OP('PUSH'), LIT(0.01), OP('GT'),
-    OP('AND'), OP('IF'),
-    OP('SEED'), LIT(0.20),
+    OP('AND'),
+    OP('SEED'), LIT(0.20), WHEN(0.5),
     // продолжение роста вверх — чуть ниже «крыши», только при запасе энергии
     OP('DIR'), DIRB('UP'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.03), OP('LT'),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(heightThr), OP('LT'),
     OP('SENSE'), SENS('ENERGY'), OP('PUSH'), LIT(growEnergyThr), OP('GT'),
-    OP('AND'), OP('AND'), OP('IF'),
-    OP('GROW'),
+    OP('AND'), OP('AND'),
+    OP('GROW'), WHEN(0.5),
     // позднее семя при возрасте
     OP('DIR'), DIRB('UP'),
     OP('SENSE'), SENS('AGE'), OP('PUSH'), LIT(seedAgeLate), OP('GT'),
     OP('SENSE'), SENS('ENERGY'), OP('PUSH'), LIT(0.01), OP('GT'),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.05), OP('GT'),
-    OP('AND'), OP('AND'), OP('IF'),
-    OP('SEED'), LIT(0.35),
+    OP('AND'), OP('AND'),
+    OP('SEED'), LIT(0.35), WHEN(0.5),
     // боковая крона — умеренно, при достаточной энергии
     OP('DIR'), DIRB('LEFT'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.03), OP('LT'),
@@ -372,40 +472,36 @@ function viableTemplateGenome(rng: Rng): Genome {
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(crownSideTop), OP('LT'),
     OP('SENSE'), SENS('ENERGY'), OP('PUSH'), LIT(0.14), OP('GT'),
     OP('SENSE'), SENS('RANDOM'), OP('PUSH'), LIT(sideBranchP), OP('LT'),
-    OP('AND'), OP('AND'), OP('AND'), OP('AND'), OP('IF'),
-    OP('BRANCH'),
-    OP('DIR'), DIRB('RIGHT'),
+    OP('AND'), OP('AND'), OP('AND'), OP('AND'),
+    OP('BRANCH'), SD('LEFT'), WHEN(0.5),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.03), OP('LT'),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(crownSideLow), OP('GT'),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(crownSideTop), OP('LT'),
     OP('SENSE'), SENS('ENERGY'), OP('PUSH'), LIT(0.14), OP('GT'),
     OP('SENSE'), SENS('RANDOM'), OP('PUSH'), LIT(sideBranchP), OP('LT'),
-    OP('AND'), OP('AND'), OP('AND'), OP('AND'), OP('IF'),
-    OP('BRANCH'),
+    OP('AND'), OP('AND'), OP('AND'), OP('AND'),
+    OP('BRANCH'), SD('RIGHT'), WHEN(0.5),
     // второй побег вверх — в пределах кроны, не у самой крыши
-    OP('DIR'), DIRB('UP'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.03), OP('LT'),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(crownSideLow), OP('GT'),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(crownMax), OP('LT'),
     OP('SENSE'), SENS('ENERGY'), OP('PUSH'), LIT(0.28), OP('GT'),
     OP('SENSE'), SENS('RANDOM'), OP('PUSH'), LIT(0.28), OP('LT'),
-    OP('AND'), OP('AND'), OP('AND'), OP('AND'), OP('IF'),
-    OP('BRANCH'),
+    OP('AND'), OP('AND'), OP('AND'), OP('AND'),
+    OP('BRANCH'), SD('UP'), WHEN(0.5),
     // глубокие боковые корни
-    OP('DIR'), DIRB('LEFT'),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.01), OP('LT'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.14), OP('GT'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.68), OP('LT'),
     OP('SENSE'), SENS('RANDOM'), OP('PUSH'), LIT(rootBranchDeepP), OP('LT'),
-    OP('AND'), OP('AND'), OP('AND'), OP('IF'),
-    OP('BRANCH'),
-    OP('DIR'), DIRB('RIGHT'),
+    OP('AND'), OP('AND'), OP('AND'),
+    OP('BRANCH'), SD('LEFT'), WHEN(0.5),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.01), OP('LT'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.14), OP('GT'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.68), OP('LT'),
     OP('SENSE'), SENS('RANDOM'), OP('PUSH'), LIT(rootBranchDeepP), OP('LT'),
-    OP('AND'), OP('AND'), OP('AND'), OP('IF'),
-    OP('BRANCH'),
+    OP('AND'), OP('AND'), OP('AND'),
+    OP('BRANCH'), SD('RIGHT'), WHEN(0.5),
     ...metaSuffix({ doubleGrow: rng.chance(0.28), shade: 'lignify' }),
   ])
 
@@ -417,58 +513,51 @@ export function hardyTemplateGenome(rng: Rng): Genome {
   return viableTemplateGenome(rng)
 }
 
-/** Пример: корни, стебель, боковые шипы и «выстрелы» SHOOT по диагонали вверх. */
+/** Пример: корни, стебель, боковые шипы и «выстрелы» SHOOT вверх и в стороны. */
 export function spikeShooterTemplateGenome(_rng?: Rng): Genome {
   const code: number[] = asm([
-    OP('DIR'), DIRB('DOWN'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.03), OP('LT'),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.04), OP('LT'),
-    OP('AND'), OP('IF'),
-    OP('BRANCH'),
+    OP('AND'),
+    OP('BRANCH'), SD('DOWN'), WHEN(0.5),
     OP('DIR'), DIRB('DOWN'),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.01), OP('LT'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.04), OP('GT'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.7), OP('LT'),
-    OP('AND'), OP('AND'), OP('IF'),
-    OP('GROW'),
+    OP('AND'), OP('AND'),
+    OP('GROW'), WHEN(0.5),
     OP('DIR'), DIRB('UP'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.03), OP('LT'),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.38), OP('LT'),
-    OP('AND'), OP('IF'),
-    OP('GROW'),
-    OP('DIR'), DIRB('LEFT'),
+    OP('AND'),
+    OP('GROW'), WHEN(0.5),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.05), OP('GT'),
     OP('SENSE'), SENS('ENERGY'), OP('PUSH'), LIT(0.08), OP('GT'),
-    OP('AND'), OP('IF'),
-    OP('SPIKE'),
-    OP('DIR'), DIRB('RIGHT'),
+    OP('AND'),
+    OP('SPIKE'), SD('LEFT'), WHEN(0.5),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.05), OP('GT'),
     OP('SENSE'), SENS('ENERGY'), OP('PUSH'), LIT(0.08), OP('GT'),
-    OP('AND'), OP('IF'),
-    OP('SPIKE'),
-    OP('DIR'), DIRB('UP'),
+    OP('AND'),
+    OP('SPIKE'), SD('RIGHT'), WHEN(0.5),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.07), OP('GT'),
     OP('SENSE'), SENS('ENERGY'), OP('PUSH'), LIT(0.07), OP('GT'),
-    OP('AND'), OP('IF'),
-    OP('SHOOT'),
-    OP('DIR'), DIRB('UP_LEFT'),
+    OP('AND'),
+    OP('SHOOT'), SD('UP'), WHEN(0.5),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.09), OP('GT'),
     OP('SENSE'), SENS('ENERGY'), OP('PUSH'), LIT(0.08), OP('GT'),
     OP('SENSE'), SENS('RANDOM'), OP('PUSH'), LIT(0.55), OP('LT'),
-    OP('AND'), OP('AND'), OP('IF'),
-    OP('SHOOT'),
-    OP('DIR'), DIRB('UP_RIGHT'),
+    OP('AND'), OP('AND'),
+    OP('SHOOT'), SD('LEFT'), WHEN(0.5),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.09), OP('GT'),
     OP('SENSE'), SENS('ENERGY'), OP('PUSH'), LIT(0.08), OP('GT'),
     OP('SENSE'), SENS('RANDOM'), OP('PUSH'), LIT(0.55), OP('LT'),
-    OP('AND'), OP('AND'), OP('IF'),
-    OP('SHOOT'),
-    OP('DIR'), DIRB('DOWN'),
+    OP('AND'), OP('AND'),
+    OP('SHOOT'), SD('RIGHT'), WHEN(0.5),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.01), OP('LT'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.1), OP('GT'),
     OP('SENSE'), SENS('RANDOM'), OP('PUSH'), LIT(0.35), OP('LT'),
-    OP('AND'), OP('AND'), OP('IF'),
-    OP('BRANCH'),
+    OP('AND'), OP('AND'),
+    OP('BRANCH'), SD('DOWN'), WHEN(0.5),
     ...metaSuffix({ doubleGrow: true, shade: 'mineralize' }),
   ])
 
@@ -481,17 +570,16 @@ export function spikeShooterTemplateGenome(_rng?: Rng): Genome {
  */
 export function shyPlantTemplateGenome(_rng?: Rng): Genome {
   const code: number[] = asm([
-    OP('DIR'), DIRB('DOWN'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.03), OP('LT'),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.04), OP('LT'),
-    OP('AND'), OP('IF'),
-    OP('BRANCH'),
+    OP('AND'),
+    OP('BRANCH'), SD('DOWN'), WHEN(0.5),
     OP('DIR'), DIRB('DOWN'),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.01), OP('LT'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.04), OP('GT'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.65), OP('LT'),
-    OP('AND'), OP('AND'), OP('IF'),
-    OP('GROW'),
+    OP('AND'), OP('AND'),
+    OP('GROW'), WHEN(0.5),
     OP('DIR'), DIRB('LEFT'),
     OP('SENSE'), SENS('FOREIGN'),
     OP('DIR'), DIRB('RIGHT'),
@@ -510,8 +598,8 @@ export function shyPlantTemplateGenome(_rng?: Rng): Genome {
     OP('IF'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.03), OP('LT'),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.35), OP('LT'),
-    OP('AND'), OP('IF'),
-    OP('GROW'),
+    OP('AND'),
+    OP('GROW'), WHEN(0.5),
     ...metaSuffix({ shade: 'mineralize' }),
   ])
 

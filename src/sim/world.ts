@@ -71,15 +71,20 @@ export class World {
   tracePlantId: number | null = null
   /** События последнего тика (для режима трассировки) */
   tickEvents: PlantTickEvent[] = []
+  /** Переиспользуемые буферы для diffuseMinerals (без аллокаций каждый тик) */
+  private readonly mineralScratchNext: Float32Array
+  private readonly mineralScratchLateral: Float32Array
 
   constructor(seed = 42) {
     this.rng = new Rng(seed)
     this.minerals = initMinerals()
     this.occupancy = Array.from({ length: WORLD.H }, () => new Int32Array(WORLD.W))
     this.light = new Float32Array(WORLD.W * WORLD.H)
+    this.mineralScratchNext = new Float32Array(WORLD.W * WORLD.H)
+    this.mineralScratchLateral = new Float32Array(WORLD.W * WORLD.H)
     resetIdCounters()
     this.seedInitialPlants(INITIAL_PLANTS)
-    this.rebuildLight()
+    this.resyncOccupancy()
   }
 
   private syncOccupancyFromPlants(): void {
@@ -98,6 +103,11 @@ export class World {
   }
 
   private rebuildLight(): void {
+    computeLightGridInto(this.occupancy, this.light)
+  }
+
+  /** Полная пересборка occupancy (рестарт, снапшот, отладка). В tick — только инкрементальные правки. */
+  private resyncOccupancy(): void {
     this.syncOccupancyFromPlants()
     computeLightGridInto(this.occupancy, this.light)
   }
@@ -418,8 +428,10 @@ export class World {
 
     this.plants = this.plants.filter((p) => !p.dead)
 
-    diffuseMinerals(this.minerals)
-    this.rebuildLight()
+    diffuseMinerals(this.minerals, {
+      next: this.mineralScratchNext,
+      lateral: this.mineralScratchLateral,
+    })
     } finally {
       setPlantEventSink(null)
     }
@@ -564,7 +576,7 @@ export class World {
     this.rng.setState(snapshot.rngState)
     setIdCounters(snapshot.nextPlantId, snapshot.nextCellId)
     this.selectedPlantId = snapshot.selectedPlantId
-    this.rebuildLight()
+    this.resyncOccupancy()
   }
 
   restart(seed?: number, randomGenomes = false): void {
@@ -582,7 +594,7 @@ export class World {
     this.occupancy = Array.from({ length: WORLD.H }, () => new Int32Array(WORLD.W))
     resetIdCounters()
     this.seedInitialPlants(INITIAL_PLANTS, randomGenomes)
-    this.rebuildLight()
+    this.resyncOccupancy()
   }
 
   /** Пустой мир с одним экземпляром из коллекции (без прорастания семян). */
@@ -596,7 +608,6 @@ export class World {
     this.minerals = initMinerals()
     this.occupancy = Array.from({ length: WORLD.H }, () => new Int32Array(WORLD.W))
     resetIdCounters()
-    this.rebuildLight()
 
     const x = Math.floor(WORLD.W / 2)
     const y = WORLD.SOIL_Y
@@ -604,6 +615,7 @@ export class World {
     this.plants.push(plant)
     this.occupancy[y][x] = plant.id
     this.selectedPlantId = plant.id
+    this.resyncOccupancy()
     return plant
   }
 

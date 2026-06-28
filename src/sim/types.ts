@@ -34,6 +34,8 @@ export interface PlantCell {
   cellEnergy: number
   age: number
   waitingForGrow: boolean
+  /** Исход последнего структурного действия (этот тик или прошлый прогон); null — не было */
+  lastActionOk?: boolean | null
 }
 
 export interface EdgeFlux {

@@ -237,8 +237,13 @@ export function mineralColorCss(m: number): string {
   return `hsl(${hue} ${sat}% ${light}%)`
 }
 
-export function diffuseMinerals(minerals: Float32Array): void {
-  const next = new Float32Array(minerals)
+export function diffuseMinerals(
+  minerals: Float32Array,
+  scratch?: { next: Float32Array; lateral: Float32Array },
+): void {
+  const gridSize = WORLD.W * WORLD.H
+  const next = scratch?.next ?? new Float32Array(gridSize)
+  const lateral = scratch?.lateral ?? new Float32Array(gridSize)
 
   for (let y = WORLD.SOIL_Y; y < WORLD.H; y++) {
     for (let x = 0; x < WORLD.W; x++) {
@@ -251,7 +256,6 @@ export function diffuseMinerals(minerals: Float32Array): void {
     }
   }
 
-  const lateral = new Float32Array(WORLD.W * WORLD.H)
   for (let y = WORLD.SOIL_Y; y < WORLD.H; y++) {
     for (let x = 0; x < WORLD.W; x++) {
       const idx = mineralIndex(x, y)

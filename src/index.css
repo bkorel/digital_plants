@@ -300,9 +300,45 @@ label {
 }
 
 .gene-item {
-  margin-bottom: 6px;
-  padding-bottom: 6px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
   border-bottom: 1px solid #1e281e;
+}
+
+.gene-item--structural .gene-item__text {
+  color: #b8e0b0;
+  font-weight: 600;
+}
+
+.gene-item__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  align-items: baseline;
+}
+
+.gene-item__ip {
+  color: #6a7a6a;
+  min-width: 2em;
+}
+
+.gene-item__hex {
+  color: #7a8a7a;
+  font-size: 0.65rem;
+}
+
+.gene-item__text {
+  color: #d4ecd0;
+  word-break: break-word;
+}
+
+.gene-item__human {
+  margin-top: 3px;
+  padding-left: 2em;
+  font-family: system-ui, sans-serif;
+  font-size: 0.68rem;
+  color: #9ec89a;
+  line-height: 1.35;
 }
 
 .gene-item:last-child {
@@ -518,10 +554,14 @@ textarea {
 
 .app--genome-explorer {
   grid-template-columns: 1fr;
+  height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
 }
 
 .app--genome-explorer .app-header {
   grid-column: 1;
+  flex-shrink: 0;
 }
 
 button.btn-explore {
@@ -538,9 +578,11 @@ button.btn-explore:hover {
   grid-column: 1 / -1;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
   min-height: 0;
+  flex: 1;
   overflow: hidden;
+  padding-bottom: 8px;
 }
 
 .genome-explorer--empty {
@@ -548,6 +590,7 @@ button.btn-explore:hover {
   background: #141a14;
   border: 1px solid #2a352a;
   border-radius: 8px;
+  overflow: auto;
 }
 
 .genome-explorer__toolbar {
@@ -555,24 +598,69 @@ button.btn-explore:hover {
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
+  flex-shrink: 0;
 }
 
 .genome-explorer__title {
   flex: 1;
+  min-width: 12em;
   font-size: 0.9rem;
   color: #b8e0b0;
   font-weight: 600;
 }
 
-.genome-explorer__meta {
+.genome-explorer__legend-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 0.78rem;
-  color: #aabaaa;
-  line-height: 1.5;
+  color: #9aaa9a;
+  cursor: pointer;
 }
 
-.genome-explorer__grid {
+.genome-explorer__meta {
+  flex-shrink: 0;
+  font-size: 0.78rem;
+  color: #aabaaa;
+  line-height: 1.45;
+}
+
+.genome-explorer__meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+
+.genome-explorer__legend {
+  flex-shrink: 0;
+  font-size: 0.78rem;
+  color: #9aaa9a;
+}
+
+.genome-explorer__legend summary {
+  cursor: pointer;
+  color: #b8e0b0;
+  font-weight: 600;
+}
+
+.genome-explorer__legend-body {
+  margin-top: 8px;
+  line-height: 1.45;
+}
+
+.genome-explorer__legend-body ul {
+  margin: 8px 0 0;
+  padding-left: 1.2em;
+}
+
+.genome-explorer__legend-body code {
+  color: #b8e0b0;
+  font-size: 0.85em;
+}
+
+.genome-explorer__layout {
   display: grid;
-  grid-template-columns: minmax(280px, 1fr) minmax(360px, 1.4fr);
+  grid-template-columns: minmax(320px, 1fr) minmax(380px, 1.2fr);
   gap: 12px;
   min-height: 0;
   flex: 1;
@@ -587,32 +675,39 @@ button.btn-explore:hover {
   flex-direction: column;
 }
 
+.genome-explorer__sim-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
 .genome-explorer__hint {
   font-size: 0.78rem;
   color: #8a9a8a;
-  margin: 0 0 10px;
-  line-height: 1.35;
+  margin: 0 0 8px;
+  line-height: 1.4;
+  flex-shrink: 0;
 }
 
 .genome-explorer__gene-list {
-  max-height: none;
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
 }
 
 .genome-explorer__gene-item {
-  display: grid;
-  grid-template-columns: 2.5em 1fr auto;
-  align-items: start;
-  gap: 6px;
-  cursor: help;
+  padding: 6px 8px;
+  border-bottom: 1px solid #1a221a;
+  border-radius: 4px;
 }
 
 .genome-explorer__gene-item--active {
   background: rgba(90, 138, 88, 0.22);
-  border-radius: 4px;
-  margin: 0 -4px;
-  padding: 2px 4px;
+  border-color: rgba(120, 180, 110, 0.35);
 }
 
 .genome-explorer__gene-item--structural .genome-explorer__gene-text {
@@ -620,20 +715,68 @@ button.btn-explore:hover {
   font-weight: 600;
 }
 
-.genome-explorer__gene-ip {
-  color: #6a7a6a;
+.genome-explorer__gene-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 10px;
 }
 
-.genome-explorer__gene-tip {
-  color: #5a6a5a;
-  font-size: 0.65rem;
-  border: 1px solid #3a4a3a;
-  border-radius: 50%;
-  width: 14px;
-  height: 14px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+.genome-explorer__gene-ip {
+  color: #6a7a6a;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.75rem;
+  min-width: 2.5em;
+}
+
+.genome-explorer__gene-bytes {
+  color: #7a8a7a;
+  font-size: 0.68rem;
+  word-break: break-all;
+  flex: 0 1 auto;
+  max-width: 100%;
+}
+
+.genome-explorer__gene-text {
+  color: #d4ecd0;
+  font-size: 0.8rem;
+  flex: 1 1 8em;
+  word-break: break-word;
+}
+
+.genome-explorer__gene-human {
+  margin-top: 4px;
+  padding-left: 2.5em;
+  font-size: 0.76rem;
+  color: #9ec89a;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.genome-explorer__gene-help {
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: #0f140f;
+  border-radius: 4px;
+  font-size: 0.74rem;
+  color: #aabaaa;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.genome-explorer__gene-help-btn,
+.genome-explorer__gene-jump {
+  flex-shrink: 0;
+  min-width: 1.6em;
+  padding: 2px 6px;
+  font-size: 0.72rem;
+  line-height: 1.2;
+  background: #1e281e;
+  border-color: #3a4a3a;
+}
+
+.genome-explorer__gene-jump {
+  color: #9ec89a;
 }
 
 .genome-explorer__cells {
@@ -641,7 +784,8 @@ button.btn-explore:hover {
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
+  flex-shrink: 0;
 }
 
 .genome-explorer__cells-label {
@@ -657,9 +801,11 @@ button.btn-explore:hover {
 .genome-explorer__run-header {
   font-size: 0.8rem;
   margin-bottom: 8px;
-  padding: 8px;
+  padding: 8px 10px;
   background: #0f140f;
   border-radius: 6px;
+  flex-shrink: 0;
+  word-break: break-word;
 }
 
 .genome-explorer__outcome {
@@ -668,8 +814,9 @@ button.btn-explore:hover {
 }
 
 .genome-explorer__sensors {
-  margin-bottom: 10px;
+  margin-bottom: 8px;
   font-size: 0.78rem;
+  flex-shrink: 0;
 }
 
 .genome-explorer__sensors summary {
@@ -680,15 +827,17 @@ button.btn-explore:hover {
 
 .genome-explorer__sensor-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
   gap: 4px;
+  max-height: 140px;
+  overflow-y: auto;
 }
 
 .genome-explorer__sensor {
   display: flex;
   justify-content: space-between;
   gap: 6px;
-  padding: 3px 6px;
+  padding: 4px 6px;
   background: #0f140f;
   border-radius: 4px;
   cursor: help;
@@ -697,11 +846,13 @@ button.btn-explore:hover {
 .genome-explorer__sensor-name {
   color: #7a8a7a;
   font-size: 0.68rem;
+  word-break: break-word;
 }
 
 .genome-explorer__sensor-val {
   color: #d4ecd0;
   font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
 }
 
 .genome-explorer__step-controls {
@@ -709,28 +860,31 @@ button.btn-explore:hover {
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
+  flex-shrink: 0;
 }
 
 .genome-explorer__step-counter {
   font-size: 0.8rem;
   color: #c8dcc4;
-  min-width: 5em;
+  min-width: 7em;
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
 
 .genome-explorer__step-detail {
-  padding: 10px;
+  padding: 10px 12px;
   background: #0f140f;
   border: 1px solid #2a352a;
   border-radius: 6px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
   font-size: 0.8rem;
+  flex-shrink: 0;
 }
 
-.genome-explorer__step-op {
+.genome-explorer__step-detail-head {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 6px;
@@ -740,33 +894,47 @@ button.btn-explore:hover {
   font-family: Consolas, monospace;
   color: #b8e0b0;
   font-weight: 600;
-  cursor: help;
+  word-break: break-word;
 }
 
 .genome-explorer__step-ip {
   color: #6a7a6a;
   font-size: 0.72rem;
+  flex-shrink: 0;
 }
 
-.genome-explorer__step-note {
-  color: #d4ecd0;
-  margin-bottom: 6px;
+.genome-explorer__step-human {
+  margin: 0 0 8px;
+  color: #9ec89a;
+  font-size: 0.78rem;
+  line-height: 1.4;
 }
 
-.genome-explorer__step-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  color: #9aaa9a;
+.genome-explorer__step-summary {
+  margin: 0;
+  padding: 8px;
+  background: #0a0e0a;
+  border-radius: 4px;
   font-family: Consolas, monospace;
   font-size: 0.72rem;
+  color: #c8dcc4;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+
+.genome-explorer__step-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
 }
 
 .genome-explorer__step-flag {
-  margin-top: 6px;
-  padding: 4px 8px;
+  padding: 3px 8px;
   border-radius: 4px;
-  font-size: 0.75rem;
+  font-size: 0.72rem;
   background: #1e281e;
   color: #c8dcc4;
 }
@@ -786,12 +954,29 @@ button.btn-explore:hover {
   color: #c0d8f0;
 }
 
+.genome-explorer__step-log-wrap {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.genome-explorer__step-log-title {
+  margin: 0 0 6px;
+  font-size: 0.82rem;
+  color: #9aaa9a;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
 .genome-explorer__step-log {
   list-style: none;
   margin: 0;
   padding: 0;
   overflow-y: auto;
   flex: 1;
+  min-height: 0;
   font-size: 0.75rem;
 }
 
@@ -806,11 +991,8 @@ button.btn-explore:hover {
 .genome-explorer__step-log-btn {
   width: 100%;
   text-align: left;
-  display: grid;
-  grid-template-columns: 2em 6em 1fr;
-  gap: 8px;
-  align-items: baseline;
-  padding: 5px 6px;
+  display: block;
+  padding: 8px 10px;
   background: transparent;
   border: none;
   border-radius: 0;
@@ -821,18 +1003,53 @@ button.btn-explore:hover {
   background: rgba(40, 60, 40, 0.25);
 }
 
+.genome-explorer__step-log-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 10px;
+  margin-bottom: 4px;
+}
+
 .genome-explorer__step-log-num {
   color: #6a7a6a;
   font-variant-numeric: tabular-nums;
+  min-width: 1.5em;
 }
 
 .genome-explorer__step-log-text {
   font-family: Consolas, monospace;
+  color: #b8e0b0;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.genome-explorer__step-log-ip {
+  color: #6a7a6a;
+  font-size: 0.68rem;
+}
+
+.genome-explorer__step-log-human {
   color: #9ec89a;
+  font-size: 0.74rem;
+  margin-bottom: 4px;
+  line-height: 1.35;
+  word-break: break-word;
 }
 
 .genome-explorer__step-log-note {
+  color: #d4ecd0;
+  line-height: 1.4;
+  word-break: break-word;
+  margin-bottom: 4px;
+}
+
+.genome-explorer__step-log-stack {
   color: #8a9a8a;
+  font-family: Consolas, monospace;
+  font-size: 0.68rem;
+  line-height: 1.4;
+  word-break: break-word;
 }
 
 .genome-explorer__empty-msg {
@@ -869,9 +1086,15 @@ button.btn-explore:hover {
   background: #344858;
 }
 
-@media (max-width: 900px) {
-  .genome-explorer__grid {
+@media (max-width: 960px) {
+  .genome-explorer__layout {
     grid-template-columns: 1fr;
+    overflow-y: auto;
+  }
+
+  .genome-explorer__code,
+  .genome-explorer__sim {
+    max-height: 50vh;
   }
 }
 

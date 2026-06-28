@@ -9,6 +9,7 @@ import {
 } from '../dev/perfProbe'
 import type { AppMode, EvolutionSnapshot, Genome, SavedGenome, ViewMode } from '../sim/types'
 import { World } from '../sim/world'
+import { isWorkerSimulationAvailable, WorldWorkerHost } from '../sim/worldWorkerHost'
 import Controls from './Controls'
 import GenomeExplorerScreen from './GenomeExplorerScreen'
 import GenomePanel from './GenomePanel'
@@ -81,6 +82,8 @@ function saveCollection(items: SavedGenome[]): void {
 
 export default function App() {
   const worldRef = useRef<World | null>(null)
+  const workerHostRef = useRef<WorldWorkerHost | null>(null)
+  const useWorkerSimRef = useRef(false)
   const evolutionSnapshotRef = useRef<EvolutionSnapshot | null>(null)
   const [world, setWorld] = useState<World | null>(null)
   const [appMode, setAppMode] = useState<AppMode>('EVOLUTION')
@@ -105,12 +108,20 @@ export default function App() {
     setRenderTick((n) => n + 1)
   }, [])
 
+  const stopWorkerSim = useCallback(() => {
+    workerHostRef.current?.stop()
+    workerHostRef.current = null
+    useWorkerSimRef.current = false
+  }, [])
+
+  const syncWorkerRestartRef = useRef<(seed: number, randomGenomes?: boolean) => void>(() => {})
+
   const performRandomRestart = useCallback(() => {
     if (appMode !== 'EVOLUTION') return
     const newSeed = Math.floor(Math.random() * 999_999) + 1
     evolutionSnapshotRef.current = null
     setSeed(newSeed)
-    worldRef.current?.restart(newSeed, true)
+    syncWorkerRestartRef.current(newSeed, true)
     setSelectedPlantId(null)
     setPaused(false)
     setViewMode('PLANTS')
@@ -126,6 +137,67 @@ export default function App() {
     },
     [performRandomRestart],
   )
+
+  const onWorkerSnapshot = useCallback(
+    (ticksRun: number) => {
+      const w = worldRef.current
+      if (!w) return
+      if (ticksRun > 0) {
+        recordRafBatch(0, ticksRun)
+        let cells = 0
+        let alive = 0
+        for (const p of w.plants) {
+          if (p.dead) continue
+          alive++
+          cells += p.cells.length
+        }
+        recordWorldMeta(w.tickCount, alive, cells)
+        tryAutoRandomRestart(w)
+      }
+      refresh()
+    },
+    [refresh, tryAutoRandomRestart],
+  )
+
+  const startWorkerSim = useCallback(() => {
+    const w = worldRef.current
+    if (!w || !isWorkerSimulationAvailable()) return
+    stopWorkerSim()
+    const host = new WorldWorkerHost(w, (ticksRun) => onWorkerSnapshot(ticksRun))
+    workerHostRef.current = host
+    useWorkerSimRef.current = true
+    host.start()
+  }, [onWorkerSnapshot, stopWorkerSim])
+
+  const resyncWorkerFromMain = useCallback(() => {
+    if (appMode === 'EVOLUTION' && isWorkerSimulationAvailable()) {
+      startWorkerSim()
+    }
+  }, [appMode, startWorkerSim])
+
+  const syncWorkerRestart = useCallback(
+    (newSeed: number, randomGenomes = false) => {
+      worldRef.current?.restart(newSeed, randomGenomes)
+      resyncWorkerFromMain()
+    },
+    [resyncWorkerFromMain],
+  )
+
+  useEffect(() => {
+    syncWorkerRestartRef.current = syncWorkerRestart
+  }, [syncWorkerRestart])
+
+  useEffect(() => {
+    return () => stopWorkerSim()
+  }, [stopWorkerSim])
+
+  useEffect(() => {
+    if (appMode === 'EVOLUTION') {
+      startWorkerSim()
+    } else {
+      stopWorkerSim()
+    }
+  }, [appMode, startWorkerSim, stopWorkerSim])
 
   useEffect(() => {
     const w = new World(seed)
@@ -149,61 +221,99 @@ export default function App() {
   useEffect(() => {
     const w = worldRef.current
     if (!w) return
-    w.tracePlantId =
+    const traceId =
       viewMode === 'TRACE' && selectedPlantId != null ? selectedPlantId : null
+    w.tracePlantId = traceId
+    workerHostRef.current?.setTracePlant(traceId)
   }, [viewMode, selectedPlantId])
 
   useEffect(() => {
     let frame = 0
-    const tickBudgetMs = 14
+    const tickBudgetMs = 22
     const loop = () => {
       const w = worldRef.current
+      const host = workerHostRef.current
+      const useWorker = useWorkerSimRef.current && host != null
+
       if (w && !paused && appMode !== 'GENOME_EXPLORER') {
-        const rafT0 = performance.now()
-        const tickBefore = w.tickCount
-        const deadline = performance.now() + tickBudgetMs
-        while (performance.now() < deadline) {
-          if (speed >= 1) {
-            const batch = Math.floor(speed)
-            for (let i = 0; i < batch; i++) {
-              const tickT0 = performance.now()
-              w.tick()
-              recordTick(performance.now() - tickT0)
-              if (performance.now() >= deadline) break
+        const traceId =
+          viewMode === 'TRACE' && selectedPlantId != null ? selectedPlantId : null
+
+        if (useWorker && appMode === 'EVOLUTION') {
+          if (!host.isBusy()) {
+            const rafT0 = performance.now()
+            const tickBefore = w.tickCount
+            let toQueue = 0
+            const deadline = performance.now() + tickBudgetMs
+            while (performance.now() < deadline) {
+              if (speed >= 1) {
+                toQueue += Math.floor(speed)
+              } else {
+                speedAccumRef.current += speed
+                if (speedAccumRef.current >= 1) {
+                  toQueue += Math.floor(speedAccumRef.current)
+                  speedAccumRef.current %= 1
+                }
+              }
+              if (toQueue >= 32) break
+              if (speed < 1 && speedAccumRef.current < 1) break
             }
-          } else {
-            speedAccumRef.current += speed
-            if (speedAccumRef.current < 1) break
-            while (speedAccumRef.current >= 1 && performance.now() < deadline) {
-              const tickT0 = performance.now()
-              w.tick()
-              recordTick(performance.now() - tickT0)
-              speedAccumRef.current -= 1
+            if (toQueue > 0) {
+              host.queueTicks(toQueue, traceId)
+            } else if (w.tickCount !== tickBefore) {
+              refresh()
+            }
+            if (toQueue > 0) {
+              recordRafBatch(performance.now() - rafT0, toQueue)
             }
           }
-          if (performance.now() >= deadline) break
-          if (speed < 1 && speedAccumRef.current < 1) break
-        }
-        if (w.tickCount !== tickBefore) {
-          const tickDelta = w.tickCount - tickBefore
-          recordRafBatch(performance.now() - rafT0, tickDelta)
-          let cells = 0
-          let alive = 0
-          for (const p of w.plants) {
-            if (p.dead) continue
-            alive++
-            cells += p.cells.length
+        } else {
+          const rafT0 = performance.now()
+          const tickBefore = w.tickCount
+          const deadline = performance.now() + tickBudgetMs
+          while (performance.now() < deadline) {
+            if (speed >= 1) {
+              const batch = Math.floor(speed)
+              for (let i = 0; i < batch; i++) {
+                const tickT0 = performance.now()
+                w.tick()
+                recordTick(performance.now() - tickT0)
+                if (performance.now() >= deadline) break
+              }
+            } else {
+              speedAccumRef.current += speed
+              if (speedAccumRef.current < 1) break
+              while (speedAccumRef.current >= 1 && performance.now() < deadline) {
+                const tickT0 = performance.now()
+                w.tick()
+                recordTick(performance.now() - tickT0)
+                speedAccumRef.current -= 1
+              }
+            }
+            if (performance.now() >= deadline) break
+            if (speed < 1 && speedAccumRef.current < 1) break
           }
-          recordWorldMeta(w.tickCount, alive, cells)
-          tryAutoRandomRestart(w)
-          refresh()
+          if (w.tickCount !== tickBefore) {
+            const tickDelta = w.tickCount - tickBefore
+            recordRafBatch(performance.now() - rafT0, tickDelta)
+            let cells = 0
+            let alive = 0
+            for (const p of w.plants) {
+              if (p.dead) continue
+              alive++
+              cells += p.cells.length
+            }
+            recordWorldMeta(w.tickCount, alive, cells)
+            tryAutoRandomRestart(w)
+            refresh()
+          }
         }
       }
       frame = requestAnimationFrame(loop)
     }
     frame = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(frame)
-  }, [paused, speed, refresh, appMode, tryAutoRandomRestart])
+  }, [paused, speed, refresh, appMode, tryAutoRandomRestart, viewMode, selectedPlantId])
 
   useEffect(() => {
     if (selectedPlantId == null || !world) return
@@ -214,10 +324,17 @@ export default function App() {
   const handleStep = useCallback(() => {
     const w = worldRef.current
     if (!w) return
-    w.tick()
-    tryAutoRandomRestart(w)
-    refresh()
-  }, [refresh, tryAutoRandomRestart])
+    const host = workerHostRef.current
+    if (useWorkerSimRef.current && host) {
+      const traceId =
+        viewMode === 'TRACE' && selectedPlantId != null ? selectedPlantId : null
+      host.queueTicks(1, traceId)
+    } else {
+      w.tick()
+      tryAutoRandomRestart(w)
+      refresh()
+    }
+  }, [refresh, tryAutoRandomRestart, viewMode, selectedPlantId])
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -246,7 +363,7 @@ export default function App() {
       setPaused(true)
     } else {
       evolutionSnapshotRef.current = null
-      worldRef.current?.restart(seed)
+      syncWorkerRestart(seed)
       setSelectedPlantId(null)
     }
     refresh()
@@ -259,7 +376,7 @@ export default function App() {
   const handleSeedChange = (newSeed: number) => {
     if (appMode === 'LABORATORY') return
     setSeed(newSeed)
-    worldRef.current?.restart(newSeed)
+    syncWorkerRestart(newSeed)
     setSelectedPlantId(null)
     refresh()
   }
@@ -328,6 +445,7 @@ export default function App() {
       // В эволюции не ставим паузу — иначе кажется, что симуляция «зависла»
       setSelectedPlantId(null)
       setPaused(false)
+      resyncWorkerFromMain()
     }
     refresh()
   }
@@ -433,7 +551,7 @@ export default function App() {
         setSelectedPlantId(restoredId)
       }
     } else {
-      worldRef.current?.restart(seed)
+      syncWorkerRestart(seed)
     }
     refresh()
   }
