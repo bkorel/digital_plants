@@ -7,6 +7,7 @@ import {
   genomeMaxAge,
   genomeSeedReserve,
   genomeShadeSenescence,
+  genomeShootRange,
   doubleGrowthLabel,
   shadeSenescenceLabel,
   type DisasmLine,
@@ -42,6 +43,23 @@ export interface GenomeCompareResult {
   bLength: number
   changedByteCount: number
   changedInstructionCount: number
+}
+
+export interface DiffHunk {
+  id: number
+  header: string
+  rows: AlignedDiffRow[]
+  hiddenBefore: number
+  hiddenAfter: number
+  gapBeforeId?: number
+  startIndex: number
+  endIndex: number
+}
+
+export interface DiffGap {
+  id: number
+  rowCount: number
+  rows: AlignedDiffRow[]
 }
 
 export interface ExplainContext {
@@ -119,26 +137,117 @@ export function diffBytes(a: Uint8Array, b: Uint8Array): ByteDiffSegment[] {
   return merged
 }
 
-function lcsAlign<T>(a: T[], b: T[], eq: (x: T, y: T) => boolean): Array<{ a?: T; b?: T }> {
+function disasmLineEqual(a: DisasmLine, b: DisasmLine): boolean {
+  return a.text === b.text && a.bytesHex === b.bytesHex
+}
+
+function disasmLineKey(line: DisasmLine): string {
+  return `${line.text}\0${line.bytesHex}`
+}
+
+/** LIS по bi при partners, отсортированных по ai (patience diff). */
+function patienceAnchorChain(partners: Array<{ ai: number; bi: number }>): Array<{ ai: number; bi: number }> {
+  if (partners.length === 0) return []
+  const tail: number[] = []
+  const prev = new Array<number>(partners.length).fill(-1)
+  for (let i = 0; i < partners.length; i++) {
+    const bi = partners[i]!.bi
+    let lo = 0
+    let hi = tail.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (partners[tail[mid]!]!.bi < bi) lo = mid + 1
+      else hi = mid
+    }
+    if (lo > 0) prev[i] = tail[lo - 1]!
+    tail[lo] = i
+  }
+  const chain: number[] = []
+  let k = tail.length > 0 ? tail[tail.length - 1]! : -1
+  while (k >= 0) {
+    chain.push(k)
+    k = prev[k]!
+  }
+  chain.reverse()
+  return chain.map((i) => partners[i]!)
+}
+
+/**
+ * Patience diff: якоря — инструкции, встречающиеся ровно один раз в обоих геномах.
+ * Между якорями — editAlign (короткие участки с повторяющимися LT/GT/AND).
+ */
+function patienceAlign<T>(
+  a: T[],
+  b: T[],
+  key: (x: T) => string,
+  eq: (x: T, y: T) => boolean,
+): Array<{ a?: T; b?: T }> {
+  if (a.length === 0) return b.map((line) => ({ b: line }))
+  if (b.length === 0) return a.map((line) => ({ a: line }))
+
+  const countA = new Map<string, number>()
+  const countB = new Map<string, number>()
+  for (const line of a) countA.set(key(line), (countA.get(key(line)) ?? 0) + 1)
+  for (const line of b) countB.set(key(line), (countB.get(key(line)) ?? 0) + 1)
+
+  const bPosByKey = new Map<string, number>()
+  for (let j = 0; j < b.length; j++) {
+    const k = key(b[j]!)
+    if (countB.get(k) === 1) bPosByKey.set(k, j)
+  }
+
+  const partners: Array<{ ai: number; bi: number }> = []
+  for (let i = 0; i < a.length; i++) {
+    const k = key(a[i]!)
+    if (countA.get(k) !== 1 || countB.get(k) !== 1) continue
+    const j = bPosByKey.get(k)
+    if (j != null) partners.push({ ai: i, bi: j })
+  }
+
+  if (partners.length === 0) return editAlign(a, b, eq)
+
+  const anchors = patienceAnchorChain(partners)
+  const result: Array<{ a?: T; b?: T }> = []
+  let aStart = 0
+  let bStart = 0
+  for (const { ai, bi } of anchors) {
+    if (ai > aStart || bi > bStart) {
+      result.push(...patienceAlign(a.slice(aStart, ai), b.slice(bStart, bi), key, eq))
+    }
+    result.push({ a: a[ai], b: b[bi] })
+    aStart = ai + 1
+    bStart = bi + 1
+  }
+  if (aStart < a.length || bStart < b.length) {
+    result.push(...patienceAlign(a.slice(aStart), b.slice(bStart), key, eq))
+  }
+  return result
+}
+
+/** Короткий edit-distance diff (fallback между patience-якорями). */
+function editAlign<T>(a: T[], b: T[], eq: (x: T, y: T) => boolean): Array<{ a?: T; b?: T }> {
   const n = a.length
   const m = b.length
+  if (n === 0) return b.map((line) => ({ b: line }))
+  if (m === 0) return a.map((line) => ({ a: line }))
+
   const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0))
   for (let i = n - 1; i >= 0; i--) {
     for (let j = m - 1; j >= 0; j--) {
-      dp[i]![j] = eq(a[i]!, b[j]!)
-        ? 1 + dp[i + 1]![j + 1]!
-        : Math.max(dp[i + 1]![j]!, dp[i]![j + 1]!)
+      const sub = 1 + dp[i + 1]![j + 1]!
+      dp[i]![j] = Math.min(1 + dp[i + 1]![j]!, 1 + dp[i]![j + 1]!, sub)
     }
   }
+
   const result: Array<{ a?: T; b?: T }> = []
   let i = 0
   let j = 0
   while (i < n || j < m) {
-    if (i < n && j < m && eq(a[i]!, b[j]!)) {
-      result.push({ a: a[i], b: b[j] })
+    if (i < n && j < m && dp[i]![j] === dp[i + 1]![j + 1]! + 1) {
+      result.push(eq(a[i]!, b[j]!) ? { a: a[i], b: b[j] } : { a: a[i], b: b[j] })
       i++
       j++
-    } else if (j < m && (i >= n || dp[i + 1]![j]! >= dp[i]![j + 1]!)) {
+    } else if (j < m && (i >= n || dp[i]![j] === dp[i]![j + 1]! + 1)) {
       result.push({ b: b[j] })
       j++
     } else {
@@ -149,27 +258,55 @@ function lcsAlign<T>(a: T[], b: T[], eq: (x: T, y: T) => boolean): Array<{ a?: T
   return result
 }
 
-/** Выравнивание инструкций дизассемблера для side-by-side / unified diff */
+function toRow(aLine?: DisasmLine, bLine?: DisasmLine): AlignedDiffRow {
+  if (aLine && bLine) {
+    const same = disasmLineEqual(aLine, bLine)
+    return { kind: same ? 'equal' : 'chg', aLine, bLine, prefix: same ? ' ' : '!' }
+  }
+  if (aLine) return { kind: 'del', aLine, prefix: '-' }
+  return { kind: 'ins', bLine: bLine!, prefix: '+' }
+}
+
+/** Склеить del/ins в одну строку side-by-side (GitHub split view) */
+export function pairDeleteInsertRows(rows: AlignedDiffRow[]): AlignedDiffRow[] {
+  const result: AlignedDiffRow[] = []
+  let i = 0
+  while (i < rows.length) {
+    const row = rows[i]!
+    if (row.kind === 'equal' || row.kind === 'chg') {
+      result.push(row)
+      i++
+      continue
+    }
+    const runStart = i
+    while (i < rows.length && (rows[i]!.kind === 'del' || rows[i]!.kind === 'ins')) {
+      i++
+    }
+    const run = rows.slice(runStart, i)
+    const dels = run.filter((r) => r.kind === 'del').map((r) => r.aLine!)
+    const inses = run.filter((r) => r.kind === 'ins').map((r) => r.bLine!)
+    const maxLen = Math.max(dels.length, inses.length)
+    for (let k = 0; k < maxLen; k++) {
+      const aLine = dels[k]
+      const bLine = inses[k]
+      if (aLine && bLine) {
+        result.push(toRow(aLine, bLine))
+      } else if (aLine) {
+        result.push({ kind: 'del', aLine, prefix: '-' })
+      } else if (bLine) {
+        result.push({ kind: 'ins', bLine, prefix: '+' })
+      }
+    }
+  }
+  return result
+}
+
+/** Выравнивание инструкций: patience diff (якоря по уникальным строкам) + edit fallback. */
 export function alignDisasm(a: Genome, b: Genome): AlignedDiffRow[] {
   const linesA = disassemble(a)
   const linesB = disassemble(b)
-  const aligned = lcsAlign(linesA, linesB, (x, y) => x.text === y.text && x.bytesHex === y.bytesHex)
-
-  return aligned.map(({ a: aLine, b: bLine }) => {
-    if (aLine && bLine) {
-      const same = aLine.text === bLine.text && aLine.bytesHex === bLine.bytesHex
-      return {
-        kind: same ? ('equal' as const) : ('chg' as const),
-        aLine,
-        bLine,
-        prefix: same ? (' ' as const) : ('!' as const),
-      }
-    }
-    if (aLine) {
-      return { kind: 'del' as const, aLine, prefix: '-' as const }
-    }
-    return { kind: 'ins' as const, bLine, prefix: '+' as const }
-  })
+  const aligned = patienceAlign(linesA, linesB, disasmLineKey, disasmLineEqual)
+  return aligned.map(({ a: aLine, b: bLine }) => toRow(aLine, bLine))
 }
 
 function countChangedBytes(segments: ByteDiffSegment[]): number {
@@ -222,6 +359,7 @@ function traitDiffs(a: Genome, b: Genome): TraitDiff[] {
     shadeSenescenceLabel(genomeShadeSenescence(a)),
     shadeSenescenceLabel(genomeShadeSenescence(b)),
   )
+  add('дальность SHOOT', `${genomeShootRange(a)} кл.`, `${genomeShootRange(b)} кл.`)
   return pairs
 }
 
@@ -283,34 +421,151 @@ export function explainGenomeDiff(
   return { summary, traits }
 }
 
-/** Строки unified diff с контекстом (как git diff -U3) */
-export function unifiedDiffRows(
+function formatHunkHeader(
+  aStartIp: number | undefined,
+  aEndIp: number | undefined,
+  bStartIp: number | undefined,
+  bEndIp: number | undefined,
+): string {
+  const aPart =
+    aStartIp != null && aEndIp != null ? `A ip ${aStartIp}–${aEndIp}` : 'A —'
+  const bPart =
+    bStartIp != null && bEndIp != null ? `B ip ${bStartIp}–${bEndIp}` : 'B —'
+  return `@@ ${aPart} · ${bPart} @@`
+}
+
+export function getFullDiffRows(cmp: GenomeCompareResult): AlignedDiffRow[] {
+  return cmp.alignedRows
+}
+
+/** Hunks с контекстом (как GitHub / git diff -U3) */
+export function buildDiffHunks(
   cmp: GenomeCompareResult,
-  contextLines = 2,
-): AlignedDiffRow[] {
+  contextLines = 3,
+): { hunks: DiffHunk[]; gaps: DiffGap[]; fullRows: AlignedDiffRow[]; trailingGapId?: number } {
   const rows = cmp.alignedRows
+  const fullRows = rows
+
+  if (rows.length === 0) {
+    return { hunks: [], gaps: [], fullRows }
+  }
+
   const changed = new Set<number>()
   for (let i = 0; i < rows.length; i++) {
     if (rows[i]!.kind !== 'equal') changed.add(i)
   }
-  if (changed.size === 0) return rows
+
+  if (changed.size === 0) {
+    return {
+      hunks: [
+        {
+          id: 0,
+          header: '@@ весь геном @@',
+          rows,
+          hiddenBefore: 0,
+          hiddenAfter: 0,
+          startIndex: 0,
+          endIndex: rows.length - 1,
+        },
+      ],
+      gaps: [],
+      fullRows,
+    }
+  }
 
   const include = new Set<number>()
   for (const idx of changed) {
-    for (let k = Math.max(0, idx - contextLines); k <= Math.min(rows.length - 1, idx + contextLines); k++) {
+    for (
+      let k = Math.max(0, idx - contextLines);
+      k <= Math.min(rows.length - 1, idx + contextLines);
+      k++
+    ) {
       include.add(k)
     }
   }
 
-  const result: AlignedDiffRow[] = []
-  let prev = -2
-  for (let i = 0; i < rows.length; i++) {
-    if (!include.has(i)) continue
-    if (prev >= 0 && i > prev + 1) {
-      result.push({ kind: 'ctx', prefix: ' ', })
+  const sorted = [...include].sort((a, b) => a - b)
+  const ranges: Array<[number, number]> = []
+  let rangeStart = sorted[0]!
+  let prev = sorted[0]!
+  for (let i = 1; i < sorted.length; i++) {
+    const idx = sorted[i]!
+    if (idx > prev + 1) {
+      ranges.push([rangeStart, prev])
+      rangeStart = idx
     }
-    result.push(rows[i]!)
-    prev = i
+    prev = idx
+  }
+  ranges.push([rangeStart, prev])
+
+  const gaps: DiffGap[] = []
+  const hunks: DiffHunk[] = []
+  let gapId = 0
+
+  const addGap = (gapStart: number, gapEnd: number): number | undefined => {
+    if (gapEnd < gapStart) return undefined
+    const gap: DiffGap = {
+      id: gapId++,
+      rowCount: gapEnd - gapStart + 1,
+      rows: rows.slice(gapStart, gapEnd + 1),
+    }
+    gaps.push(gap)
+    return gap.id
+  }
+
+  for (let h = 0; h < ranges.length; h++) {
+    const [start, end] = ranges[h]!
+    const gapBeforeId =
+      h === 0
+        ? start > 0
+          ? addGap(0, start - 1)
+          : undefined
+        : addGap(ranges[h - 1]![1] + 1, start - 1)
+
+    const hunkRows = rows.slice(start, end + 1)
+    const aStartIp = hunkRows.find((r) => r.aLine)?.aLine?.index
+    const aEndIp = [...hunkRows].reverse().find((r) => r.aLine)?.aLine?.index
+    const bStartIp = hunkRows.find((r) => r.bLine)?.bLine?.index
+    const bEndIp = [...hunkRows].reverse().find((r) => r.bLine)?.bLine?.index
+
+    hunks.push({
+      id: h,
+      header: formatHunkHeader(aStartIp, aEndIp, bStartIp, bEndIp),
+      rows: hunkRows,
+      hiddenBefore: start,
+      hiddenAfter: h < ranges.length - 1 ? 0 : rows.length - 1 - end,
+      gapBeforeId,
+      startIndex: start,
+      endIndex: end,
+    })
+  }
+
+  const lastEnd = ranges[ranges.length - 1]![1]
+  const trailingGapId =
+    lastEnd < rows.length - 1 ? addGap(lastEnd + 1, rows.length - 1) : undefined
+
+  return { hunks, gaps, fullRows, trailingGapId }
+}
+
+/** @deprecated Используйте buildDiffHunks */
+export function unifiedDiffRows(
+  cmp: GenomeCompareResult,
+  contextLines = 2,
+): AlignedDiffRow[] {
+  const { hunks, gaps } = buildDiffHunks(cmp, contextLines)
+  const result: AlignedDiffRow[] = []
+  for (const hunk of hunks) {
+    if (hunk.gapBeforeId != null) {
+      result.push({ kind: 'ctx', prefix: ' ' })
+    }
+    result.push(...hunk.rows)
+  }
+  if (gaps.length > 0 && hunks.length > 0) {
+    const lastHunkEnd = hunks[hunks.length - 1]!.endIndex
+    if (lastHunkEnd < cmp.alignedRows.length - 1) {
+      result.push({ kind: 'ctx', prefix: ' ' })
+    }
   }
   return result
 }
+

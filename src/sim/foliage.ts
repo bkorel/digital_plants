@@ -1,10 +1,4 @@
-import {
-  DEATH_ENERGY_RETURN,
-  SHADED_SPROUT_LAYERS,
-  SPIKE_LEAF_KILL_RADIUS,
-  SPIKE_STEM_DRAIN,
-  WORLD,
-} from './config'
+import { DEATH_ENERGY_RETURN, SHADED_SPROUT_LAYERS, SPIKE_LEAF_KILL_RADIUS, WORLD } from './config'
 import { isYInBounds, offsetX, xDistance } from './coords'
 import { shadeLayersAbove } from './environment'
 import { genomeShadeSenescence } from './genome'
@@ -138,10 +132,24 @@ function pruneFloatingAirParts(
   }
 }
 
+/** Уничтожить надземную клетку и отсечь незакреплённые ветки (как после соприкосновения листьев). */
+export function killAirCellAndPrune(
+  plant: Plant,
+  cell: PlantCell,
+  occupancy: Int32Array[],
+): MineralDeposit[] {
+  const deposits: MineralDeposit[] = []
+  if (!isAir(cell.y)) return deposits
+  removeAirCell(plant, cell, occupancy, deposits)
+  pruneFloatingAirParts(plant, occupancy, deposits)
+  return deposits
+}
+
 function manhattan(x1: number, y1: number, x2: number, y2: number): number {
   return xDistance(x1, x2) + Math.abs(y1 - y2)
 }
 
+/** Пассивная аура шипа: чужие побеги (SPROUT) в радиусе гибнут без выстрела. */
 function resolveSpikeAura(plants: Plant[]): Set<string> {
   const toKill = new Set<string>()
   const spikes: { x: number; y: number; plantId: number }[] = []
@@ -158,18 +166,12 @@ function resolveSpikeAura(plants: Plant[]): Set<string> {
   for (const plant of plants) {
     if (plant.dead) continue
     for (const cell of plant.cells) {
-      if (!isAir(cell.y)) continue
+      if (!isFoliageLeaf(cell)) continue
       for (const spike of spikes) {
         if (spike.plantId === plant.id) continue
         if (manhattan(cell.x, cell.y, spike.x, spike.y) > SPIKE_LEAF_KILL_RADIUS) continue
-
-        if (isFoliageLeaf(cell)) {
-          toKill.add(cellKey(plant.id, cell.id))
-          break
-        }
-        if (isFoliageStem(cell)) {
-          cell.cellEnergy = Math.max(0, cell.cellEnergy - SPIKE_STEM_DRAIN)
-        }
+        toKill.add(cellKey(plant.id, cell.id))
+        break
       }
     }
   }

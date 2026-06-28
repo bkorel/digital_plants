@@ -1,4 +1,12 @@
-import { DEFAULT_MAX_AGE, GENOME, MIN_AGE, MUTATION, MUTATION_RATE } from './config'
+import {
+  DEFAULT_MAX_AGE,
+  GENOME,
+  MIN_AGE,
+  MUTATION,
+  MUTATION_RATE,
+  SHOOT_RANGE_MAX,
+  SHOOT_RANGE_MIN,
+} from './config'
 import type { Direction, Genome } from './types'
 import { Rng } from './rng'
 
@@ -302,6 +310,12 @@ export function genomeDepthCap(genome: Genome): number {
   return 0.08 + ((codeSum(code) >>> 4) % 40) / 100
 }
 
+/** Дальность луча SHOOT в клетках (3..50), детерминированно от кода генома. */
+export function genomeShootRange(genome: Genome): number {
+  const span = SHOOT_RANGE_MAX - SHOOT_RANGE_MIN
+  return SHOOT_RANGE_MIN + (codeSum(genome.code) % (span + 1))
+}
+
 /** Маркеры метаданных в хвосте шаблонного генома (VM обычно до них не доходит). */
 export const GENOME_META_DOUBLE_GROW = 0xfc
 export const GENOME_META_SHADE_LIGNIFY = 0xfd
@@ -547,19 +561,25 @@ export function spikeShooterTemplateGenome(_rng?: Rng): Genome {
     OP('SENSE'), SENS('ENERGY'), OP('PUSH'), LIT(0.08), OP('GT'),
     OP('AND'),
     OP('SPIKE'), SD('RIGHT'), WHEN(0.5),
+    OP('DIR'), DIRB('UP'),
+    OP('SENSE'), SENS('FOREIGN'),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.07), OP('GT'),
     OP('SENSE'), SENS('ENERGY'), OP('PUSH'), LIT(0.07), OP('GT'),
-    OP('AND'),
+    OP('AND'), OP('AND'),
     OP('SHOOT'), SD('UP'), WHEN(0.5),
+    OP('DIR'), DIRB('LEFT'),
+    OP('SENSE'), SENS('FOREIGN'),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.09), OP('GT'),
     OP('SENSE'), SENS('ENERGY'), OP('PUSH'), LIT(0.08), OP('GT'),
     OP('SENSE'), SENS('RANDOM'), OP('PUSH'), LIT(0.55), OP('LT'),
-    OP('AND'), OP('AND'),
+    OP('AND'), OP('AND'), OP('AND'),
     OP('SHOOT'), SD('LEFT'), WHEN(0.5),
+    OP('DIR'), DIRB('RIGHT'),
+    OP('SENSE'), SENS('FOREIGN'),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.09), OP('GT'),
     OP('SENSE'), SENS('ENERGY'), OP('PUSH'), LIT(0.08), OP('GT'),
     OP('SENSE'), SENS('RANDOM'), OP('PUSH'), LIT(0.55), OP('LT'),
-    OP('AND'), OP('AND'),
+    OP('AND'), OP('AND'), OP('AND'),
     OP('SHOOT'), SD('RIGHT'), WHEN(0.5),
     OP('SENSE'), SENS('HEIGHT'), OP('PUSH'), LIT(0.01), OP('LT'),
     OP('SENSE'), SENS('DEPTH'), OP('PUSH'), LIT(0.1), OP('GT'),

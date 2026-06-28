@@ -1212,11 +1212,33 @@ button.btn-compare:hover {
 
 .genome-compare__diff h3 {
   margin: 0;
-  padding: 8px 12px;
   font-size: 0.85rem;
   color: #b8e0b0;
+}
+
+.genome-diff__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
   border-bottom: 1px solid #2a352a;
   flex-shrink: 0;
+}
+
+.genome-diff__toolbar button {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  font-size: 0.75rem;
+  background: #1a221a;
+  border: 1px solid #3a4a3a;
+  border-radius: 4px;
+  color: #b8e0b0;
+  cursor: pointer;
+}
+
+.genome-diff__toolbar button:hover {
+  background: #243024;
 }
 
 .genome-compare__diff-head,
@@ -1264,20 +1286,70 @@ button.btn-compare:hover {
   background: transparent;
 }
 
-.genome-diff__line--del {
-  background: rgba(180, 60, 60, 0.22);
-}
-
-.genome-diff__line--ins {
-  background: rgba(60, 160, 80, 0.22);
-}
-
-.genome-diff__line--chg {
+.genome-diff__line--chg:not(.genome-diff__line--paired) {
   background: rgba(180, 160, 40, 0.22);
 }
 
 .genome-diff__line--ctx {
   color: #666;
+}
+
+.genome-diff__hunk {
+  display: flex;
+  flex-direction: column;
+}
+
+.genome-diff__hunk-header {
+  padding: 4px 12px;
+  font-family: ui-monospace, 'Cascadia Code', monospace;
+  font-size: 0.7rem;
+  color: #7a9a7a;
+  background: #121812;
+  border-top: 1px solid #243024;
+  border-bottom: 1px solid #243024;
+}
+
+.genome-diff__hunk:first-child .genome-diff__hunk-header {
+  border-top: none;
+}
+
+.genome-diff__gap {
+  display: block;
+  width: 100%;
+  padding: 6px 12px;
+  margin: 0;
+  border: none;
+  border-top: 1px solid #1e281e;
+  border-bottom: 1px solid #1e281e;
+  background: #101610;
+  color: #6a7a6a;
+  font-family: ui-monospace, 'Cascadia Code', monospace;
+  font-size: 0.7rem;
+  text-align: center;
+  cursor: pointer;
+}
+
+.genome-diff__gap:hover {
+  background: #162016;
+  color: #9aaa9a;
+}
+
+.genome-diff__line--paired {
+  background: linear-gradient(
+    90deg,
+    rgba(180, 60, 60, 0.22) 0%,
+    rgba(180, 60, 60, 0.22) 50%,
+    rgba(60, 160, 80, 0.22) 50%,
+    rgba(60, 160, 80, 0.22) 100%
+  );
+}
+
+.genome-diff__line--del:not(.genome-diff__line--paired) {
+  background: rgba(180, 60, 60, 0.22);
+}
+
+.genome-diff__line--ins:not(.genome-diff__line--paired) {
+  background: rgba(60, 160, 80, 0.22);
 }
 
 /* ── Genealogy ── */
