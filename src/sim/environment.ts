@@ -15,33 +15,33 @@ import {
   AIR_WATER,
   SURFACE_SOIL_WATER_FRAC,
   WATER_PER_DEPTH,
-  WORLD,
 } from './config'
+import { simWorld } from './worldBounds'
 import { offsetX } from './coords'
 import type { Plant, PlantCell } from './types'
 
 export function isSoil(y: number): boolean {
-  return y >= WORLD.SOIL_Y
+  return y >= simWorld.SOIL_Y
 }
 
 export function soilDepth(y: number): number {
-  return Math.max(0, y - WORLD.SOIL_Y)
+  return Math.max(0, y - simWorld.SOIL_Y)
 }
 
 export function initMinerals(): Float32Array {
-  const minerals = new Float32Array(WORLD.W * WORLD.H)
-  for (let y = WORLD.SOIL_Y; y < WORLD.H; y++) {
+  const minerals = new Float32Array(simWorld.W * simWorld.H)
+  for (let y = simWorld.SOIL_Y; y < simWorld.H; y++) {
     const d = soilDepth(y)
     const val = Math.min(MINERAL_CAP, MINERAL_BASE + MINERAL_DEPTH_GAIN * d)
-    for (let x = 0; x < WORLD.W; x++) {
-      minerals[y * WORLD.W + x] = val
+    for (let x = 0; x < simWorld.W; x++) {
+      minerals[y * simWorld.W + x] = val
     }
   }
   return minerals
 }
 
 export function mineralIndex(x: number, y: number): number {
-  return y * WORLD.W + x
+  return y * simWorld.W + x
 }
 
 export function getLocalWater(_x: number, y: number): number {
@@ -56,7 +56,7 @@ export function getWater(x: number, y: number): number {
 }
 
 function absorbsWater(cell: PlantCell): boolean {
-  return cell.type === 'ROOT' || (cell.type === 'SPROUT' && cell.y >= WORLD.SOIL_Y)
+  return cell.type === 'ROOT' || (cell.type === 'SPROUT' && cell.y >= simWorld.SOIL_Y)
 }
 
 export function plantWaterSupply(plant: Plant): number {
@@ -64,10 +64,10 @@ export function plantWaterSupply(plant: Plant): number {
   for (const cell of plant.cells) {
     if (absorbsWater(cell)) {
       supply = Math.max(supply, getLocalWater(cell.x, cell.y))
-    } else if (cell.type === 'SPROUT' && cell.y === WORLD.SOIL_Y - 1) {
+    } else if (cell.type === 'SPROUT' && cell.y === simWorld.SOIL_Y - 1) {
       supply = Math.max(
         supply,
-        getLocalWater(cell.x, WORLD.SOIL_Y) * SURFACE_SOIL_WATER_FRAC,
+        getLocalWater(cell.x, simWorld.SOIL_Y) * SURFACE_SOIL_WATER_FRAC,
       )
     }
   }
@@ -149,13 +149,13 @@ export function normalizedCrowdAbove(
 }
 
 export function normalizedHeight(y: number): number {
-  const above = WORLD.SOIL_Y - y
-  return Math.max(0, Math.min(1, above / Math.max(1, WORLD.SOIL_Y)))
+  const above = simWorld.SOIL_Y - y
+  return Math.max(0, Math.min(1, above / Math.max(1, simWorld.SOIL_Y)))
 }
 
 export function normalizedDepth(y: number): number {
   const depth = soilDepth(y)
-  return Math.max(0, Math.min(1, depth / Math.max(1, WORLD.H - WORLD.SOIL_Y)))
+  return Math.max(0, Math.min(1, depth / Math.max(1, simWorld.H - simWorld.SOIL_Y)))
 }
 
 /**
@@ -163,14 +163,14 @@ export function normalizedDepth(y: number): number {
  * мира — максимум. Это вознаграждает рост вверх (за свет надо тянуться).
  */
 export function altitudeLight(y: number): number {
-  if (y >= WORLD.SOIL_Y) return BASE_LIGHT * 0.45
-  const above = WORLD.SOIL_Y - y
+  if (y >= simWorld.SOIL_Y) return BASE_LIGHT * 0.45
+  const above = simWorld.SOIL_Y - y
   const frac = Math.min(1, above / SKY_LIGHT_RAMP)
   return BASE_LIGHT * (0.5 + 0.5 * frac)
 }
 
 export function computeLightGrid(occupancy: (Int32Array | null)[]): Float32Array {
-  const light = new Float32Array(WORLD.W * WORLD.H)
+  const light = new Float32Array(simWorld.W * simWorld.H)
   computeLightGridInto(occupancy, light)
   return light
 }
@@ -180,11 +180,11 @@ export function computeLightGridInto(
   occupancy: (Int32Array | null)[],
   light: Float32Array,
 ): void {
-  for (let x = 0; x < WORLD.W; x++) {
+  for (let x = 0; x < simWorld.W; x++) {
     let layersAbove = 0
     let lastOccY = -1
-    for (let y = 0; y < WORLD.H; y++) {
-      const idx = y * WORLD.W + x
+    for (let y = 0; y < simWorld.H; y++) {
+      const idx = y * simWorld.W + x
       const effective = effectiveShadeLayers(layersAbove, y, lastOccY)
       light[idx] =
         effective > MAX_SHADE_LAYERS
@@ -241,23 +241,23 @@ export function diffuseMinerals(
   minerals: Float32Array,
   scratch?: { next: Float32Array; lateral: Float32Array },
 ): void {
-  const gridSize = WORLD.W * WORLD.H
+  const gridSize = simWorld.W * simWorld.H
   const next = scratch?.next ?? new Float32Array(gridSize)
   const lateral = scratch?.lateral ?? new Float32Array(gridSize)
 
-  for (let y = WORLD.SOIL_Y; y < WORLD.H; y++) {
-    for (let x = 0; x < WORLD.W; x++) {
+  for (let y = simWorld.SOIL_Y; y < simWorld.H; y++) {
+    for (let x = 0; x < simWorld.W; x++) {
       const idx = mineralIndex(x, y)
       const down = minerals[idx] * MINERAL_SINK_RATE
       next[idx] -= down
-      if (y + 1 < WORLD.H) {
+      if (y + 1 < simWorld.H) {
         next[mineralIndex(x, y + 1)] += down
       }
     }
   }
 
-  for (let y = WORLD.SOIL_Y; y < WORLD.H; y++) {
-    for (let x = 0; x < WORLD.W; x++) {
+  for (let y = simWorld.SOIL_Y; y < simWorld.H; y++) {
+    for (let x = 0; x < simWorld.W; x++) {
       const idx = mineralIndex(x, y)
       const left = next[mineralIndex(offsetX(x, -1), y)]
       const right = next[mineralIndex(offsetX(x, 1), y)]
@@ -265,9 +265,9 @@ export function diffuseMinerals(
     }
   }
 
-  for (let y = WORLD.SOIL_Y; y < WORLD.H; y++) {
+  for (let y = simWorld.SOIL_Y; y < simWorld.H; y++) {
     const baseline = Math.min(MINERAL_CAP, MINERAL_BASE + MINERAL_DEPTH_GAIN * soilDepth(y))
-    for (let x = 0; x < WORLD.W; x++) {
+    for (let x = 0; x < simWorld.W; x++) {
       const idx = mineralIndex(x, y)
       let v = next[idx] + lateral[idx]
       // медленная регенерация к естественному уровню (выветривание породы, осадки)
@@ -281,8 +281,8 @@ export function diffuseMinerals(
 
 export function totalSoilEnergy(minerals: Float32Array): number {
   let sum = 0
-  for (let y = WORLD.SOIL_Y; y < WORLD.H; y++) {
-    for (let x = 0; x < WORLD.W; x++) {
+  for (let y = simWorld.SOIL_Y; y < simWorld.H; y++) {
+    for (let x = 0; x < simWorld.W; x++) {
       sum += minerals[mineralIndex(x, y)]
     }
   }

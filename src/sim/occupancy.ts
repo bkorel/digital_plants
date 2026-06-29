@@ -1,4 +1,4 @@
-import { WORLD } from './config'
+import { simWorld } from './worldBounds'
 import { isYInBounds, offsetX } from './coords'
 
 /** Метка ячейки, занятой покоящимся семенем (id растений > 0). */
@@ -29,12 +29,12 @@ export function touchesForeignPlantInAir(
   x: number,
   y: number,
 ): boolean {
-  if (y >= WORLD.SOIL_Y) return false
+  if (y >= simWorld.SOIL_Y) return false
   for (const [dx, dy] of NEIGHBOR_DELTA) {
     const nx = offsetX(x, dx)
     const ny = y + dy
     if (!isYInBounds(ny)) continue
-    if (ny >= WORLD.SOIL_Y) continue
+    if (ny >= simWorld.SOIL_Y) continue
     const occ = occupancy[ny][nx]
     if (occ > 0 && occ !== plantId) return true
   }

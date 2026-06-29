@@ -1,3 +1,4 @@
+import type { GenomeExecutionRecorder } from './genomeExecution'
 import {
   CAP,
   DEATH_ENERGY_RETURN,
@@ -24,8 +25,8 @@ import {
   SPROUT_SINK_POTENTIAL,
   TRANSPORT_RATE,
   VM_STEP_BUDGET,
-  WORLD,
 } from './config'
+import { simWorld } from './worldBounds'
 import {
   getLocalWater,
   getMineralAt,
@@ -117,6 +118,8 @@ export function createPlant(
     dead: false,
     accounting: {
       seedsCreated: 0,
+      spikesCreated: 0,
+      shootsFired: 0,
       photoEnergyGained: 0,
       mineralEnergyGained: 0,
       upkeepSpent: 0,
@@ -181,8 +184,8 @@ function plantSenescenceMultiplier(plant: Plant): number {
 export function plantMaxHeight(plant: Plant): number {
   let maxAbove = 0
   for (const c of plant.cells) {
-    if (c.y < WORLD.SOIL_Y) {
-      maxAbove = Math.max(maxAbove, WORLD.SOIL_Y - c.y)
+    if (c.y < simWorld.SOIL_Y) {
+      maxAbove = Math.max(maxAbove, simWorld.SOIL_Y - c.y)
     }
   }
   return maxAbove
@@ -191,8 +194,8 @@ export function plantMaxHeight(plant: Plant): number {
 export function plantMaxRootDepth(plant: Plant): number {
   let maxDepth = 0
   for (const c of plant.cells) {
-    if (c.y >= WORLD.SOIL_Y) {
-      maxDepth = Math.max(maxDepth, c.y - WORLD.SOIL_Y)
+    if (c.y >= simWorld.SOIL_Y) {
+      maxDepth = Math.max(maxDepth, c.y - simWorld.SOIL_Y)
     }
   }
   return maxDepth
@@ -258,9 +261,9 @@ export function readSensorValue(
     case 'ENERGY':
       return plantEnergyRatio(plant)
     case 'LIGHT':
-      return light[cell.y * WORLD.W + cell.x]
+      return light[cell.y * simWorld.W + cell.x]
     case 'WATER':
-      return cell.y >= WORLD.SOIL_Y || cell.type === 'ROOT'
+      return cell.y >= simWorld.SOIL_Y || cell.type === 'ROOT'
         ? getLocalWater(cell.x, cell.y)
         : plantWaterSupply(plant)
     case 'MINERALS':
@@ -298,7 +301,7 @@ export function readSensorValue(
       const { dx, dy } = DIR_DELTA[world]
       const nx = offsetX(cell.x, dx)
       const ny = cell.y + dy
-      if (!isYInBounds(ny) || ny < WORLD.SOIL_Y) return 0
+      if (!isYInBounds(ny) || ny < simWorld.SOIL_Y) return 0
       return Math.min(1, getMineralAt(minerals, nx, ny) / 20)
     }
     case 'CROWD_ABOVE':
@@ -322,7 +325,7 @@ export function transportEnergy(plant: Plant): void {
   const cells = plant.cells
   const posMap = new Map<number, PlantCell>()
   for (const c of cells) {
-    posMap.set(c.y * WORLD.W + c.x, c)
+    posMap.set(c.y * simWorld.W + c.x, c)
   }
 
   const flows: { from: PlantCell; to: PlantCell; amount: number }[] = []
@@ -332,7 +335,7 @@ export function transportEnergy(plant: Plant): void {
       [1, 0],
       [0, 1],
     ] as const) {
-      const b = posMap.get((a.y + dy) * WORLD.W + offsetX(a.x, dx))
+      const b = posMap.get((a.y + dy) * simWorld.W + offsetX(a.x, dx))
       if (!b) continue
 
       const potA = potential(a)
@@ -380,7 +383,7 @@ export function plantMineralSupply(
 
 /** Клетка, способная к фотосинтезу: надземные стебли (слабее) и ростки */
 function isLeaf(cell: PlantCell): boolean {
-  return cell.y < WORLD.SOIL_Y && (cell.type === 'STEM' || cell.type === 'SPROUT')
+  return cell.y < simWorld.SOIL_Y && (cell.type === 'STEM' || cell.type === 'SPROUT')
 }
 
 function photoGainFactor(cell: PlantCell): number {
@@ -404,7 +407,7 @@ export function applyIncomeAndUpkeep(
   for (const cell of plant.cells) {
     let income = 0
     if (isLeaf(cell)) {
-      const l = light[cell.y * WORLD.W + cell.x]
+      const l = light[cell.y * simWorld.W + cell.x]
       income = l * photoGainFactor(cell) * nutrient
       plant.accounting.photoEnergyGained += income
     }
@@ -417,7 +420,7 @@ export function applyIncomeAndUpkeep(
 
 /** Тип зрелой клетки определяется тем, где она находится: в почве — корень, в воздухе — стебель */
 function matureType(cell: PlantCell): 'ROOT' | 'STEM' {
-  return cell.y >= WORLD.SOIL_Y ? 'ROOT' : 'STEM'
+  return cell.y >= simWorld.SOIL_Y ? 'ROOT' : 'STEM'
 }
 
 /** После появления потомка меристема созревает в ткань по положению в мире. */
@@ -456,7 +459,7 @@ export interface GrowthResult {
 
 /** Есть ли в почве опора ниже точки роста (корень/клетка глубже) */
 export function hasSoilAnchor(plant: Plant, fromY: number): boolean {
-  return plant.cells.some((c) => c.y > fromY && c.y >= WORLD.SOIL_Y)
+  return plant.cells.some((c) => c.y > fromY && c.y >= simWorld.SOIL_Y)
 }
 
 function canGrowIntoAir(plant: Plant, fromY: number): boolean {
@@ -613,6 +616,7 @@ interface VMContext {
   rng: Rng
   newSeeds: { x: number; y: number; energy: number }[]
   shootDeposits: MineralDeposit[]
+  recorder?: GenomeExecutionRecorder
 }
 
 function growCost(relative: Direction): number {
@@ -636,7 +640,7 @@ function spawnMeristem(
   if (!canPlace(occupancy, plant.id, nx, ny, worldDir)) return false
 
   // Рост в воздух разрешён только если в почве есть опора (корень глубже точки роста)
-  if (ny < WORLD.SOIL_Y && !canGrowIntoAir(plant, cell.y)) return false
+  if (ny < simWorld.SOIL_Y && !canGrowIntoAir(plant, cell.y)) return false
 
   const cost = growCost(relativeDir)
   if (cell.cellEnergy < cost) return false
@@ -673,7 +677,7 @@ function canGrowAt(
   y: number,
 ): boolean {
   if (!canPlace(occupancy, plant.id, x, y)) return false
-  if (y < WORLD.SOIL_Y && !canGrowIntoAir(plant, fromY)) return false
+  if (y < simWorld.SOIL_Y && !canGrowIntoAir(plant, fromY)) return false
   return true
 }
 
@@ -700,7 +704,7 @@ function spawnDoubleGrow(
   if (cell.cellEnergy < cost) return false
 
   cell.cellEnergy -= cost
-  const midKind = ny >= WORLD.SOIL_Y ? 'ROOT' : 'STEM'
+  const midKind = ny >= simWorld.SOIL_Y ? 'ROOT' : 'STEM'
   const mid: PlantCell = {
     id: nextCellId++,
     x: nx,
@@ -765,7 +769,7 @@ function dropSeed(
   energyFraction: number,
 ): string | null {
   const { plant, occupancy, newSeeds } = ctx
-  if (cell.y > WORLD.SOIL_Y - MIN_SEED_HEIGHT) return 'слишком низко для семени'
+  if (cell.y > simWorld.SOIL_Y - MIN_SEED_HEIGHT) return 'слишком низко для семени'
 
   const { dx, dy } = DIR_DELTA[dir]
   const nx = offsetX(cell.x, dx)
@@ -867,12 +871,12 @@ function placeSpikeCell(
   ctx: VMContext,
 ): PlantCell | null {
   const { plant, occupancy } = ctx
-  if (cell.y >= WORLD.SOIL_Y - 1) return null
+  if (cell.y >= simWorld.SOIL_Y - 1) return null
 
   const { dx, dy } = DIR_DELTA[dir]
   const nx = offsetX(cell.x, dx)
   const ny = cell.y + dy
-  if (!isYInBounds(ny) || ny >= WORLD.SOIL_Y) return null
+  if (!isYInBounds(ny) || ny >= simWorld.SOIL_Y) return null
 
   const existing = getCellAt(plant, nx, ny)
   if (existing?.type === 'SPIKE') {
@@ -898,6 +902,7 @@ function placeSpikeCell(
   }
   plant.cells.push(spike)
   setOccupancy(occupancy, plant.id, spike)
+  plant.accounting.spikesCreated++
   emitPlantEvent({
     plantId: plant.id,
     kind: 'SPIKE',
@@ -929,7 +934,7 @@ function raycastShootTarget(
   for (let step = 1; step <= range; step++) {
     const x = offsetX(spikeX, dx * step)
     const y = spikeY + dy * step
-    if (!isYInBounds(y) || y >= WORLD.SOIL_Y) return null
+    if (!isYInBounds(y) || y >= simWorld.SOIL_Y) return null
 
     const occ = occupancy[y][x]
     if (occ === 0) continue
@@ -956,13 +961,13 @@ function raycastShootTarget(
 function shootSpike(cell: PlantCell, whereRel: Direction, ctx: VMContext): boolean {
   const { plant, occupancy, plants, shootDeposits } = ctx
   if (cell.cellEnergy < SHOOT_COST) return false
-  if (cell.y >= WORLD.SOIL_Y - 1) return false
+  if (cell.y >= simWorld.SOIL_Y - 1) return false
 
   const placementWorld = resolveRelativeDir(cell.dir, whereRel)
   const { dx, dy } = DIR_DELTA[placementWorld]
   const sx = offsetX(cell.x, dx)
   const sy = cell.y + dy
-  if (!isYInBounds(sy) || sy >= WORLD.SOIL_Y) return false
+  if (!isYInBounds(sy) || sy >= simWorld.SOIL_Y) return false
 
   const existingSpike = getCellAt(plant, sx, sy)
   const hasSpike = existingSpike?.type === 'SPIKE'
@@ -991,6 +996,7 @@ function shootSpike(cell: PlantCell, whereRel: Direction, ctx: VMContext): boole
     }
     plant.cells.push(spike)
     setOccupancy(occupancy, plant.id, spike)
+    plant.accounting.spikesCreated++
   }
 
   const rayWorld = resolveRelativeDir(spike.dir, whereRel)
@@ -999,6 +1005,7 @@ function shootSpike(cell: PlantCell, whereRel: Direction, ctx: VMContext): boole
   if (!hit) return false
 
   cell.cellEnergy -= SHOOT_COST
+  plant.accounting.shootsFired++
   if (hasSpike) {
     spike.cellEnergy = Math.min(CAP.SPIKE, spike.cellEnergy + SHOOT_COST * 0.35)
   }
@@ -1053,9 +1060,16 @@ function runCellProgram(
 
   const tracing = trace !== undefined
 
+  const finishRun = (result: CellRun): CellRun => {
+    const stopIp = Math.min(ip, Math.max(0, code.length - 1))
+    ctx.recorder?.onStop(stopIp)
+    return result
+  }
+
   const markStructural = (ok: boolean) => {
     lastActionOk = ok
     cell.lastActionOk = ok
+    if (ok) ctx.recorder?.onStructuralSuccess(ip)
   }
 
   const traceArgs = (argCount: number, a0: number, a1: number): number[] =>
@@ -1101,6 +1115,7 @@ function runCellProgram(
 
   while (steps < VM_STEP_BUDGET && ip < code.length) {
     steps++
+    ctx.recorder?.onStep(ip)
     const op = decodeOp(code[ip])
     const a0 = readArg(code, ip, 0)
     const a1 = readArg(code, ip, 1)
@@ -1236,7 +1251,7 @@ function runCellProgram(
             structuralSuccess: true,
             runEnded: true,
           })
-          return { actions: actions + 1, matured: true, attempted }
+          return finishRun({ actions: actions + 1, matured: true, attempted })
         }
         markStructural(false)
         logStep(op, 1, a0, 0, stackBefore, stack, () => 'GROW не прошёл (нет места, воды или энергии)', {
@@ -1281,7 +1296,7 @@ function runCellProgram(
             runEnded: actions >= maxActions,
           })
           if (actions >= maxActions) {
-            return { actions, matured: false, attempted }
+            return finishRun({ actions, matured: false, attempted })
           }
           ip += 3
           break
@@ -1317,7 +1332,7 @@ function runCellProgram(
             () => `SEED успешен (доля ${seedFrac.toFixed(2)})`,
             { structuralAttempt: true, structuralSuccess: true, runEnded: true },
           )
-          return { actions: actions + 1, matured: false, attempted }
+          return finishRun({ actions: actions + 1, matured: false, attempted })
         }
         markStructural(false)
         logStep(op, 2, a0, a1, stackBefore, stack, () => `SEED не прошёл: ${seedErr}`, {
@@ -1361,7 +1376,7 @@ function runCellProgram(
             runEnded: actions >= maxActions,
           })
           if (actions >= maxActions) {
-            return { actions, matured: false, attempted }
+            return finishRun({ actions, matured: false, attempted })
           }
           ip += 3
           break
@@ -1403,7 +1418,7 @@ function runCellProgram(
             () => `SHOOT ${formatResolved(whereRel)} успешен — попадание по цели`,
             { structuralAttempt: true, structuralSuccess: true, runEnded: true },
           )
-          return { actions: actions + 1, matured: false, attempted }
+          return finishRun({ actions: actions + 1, matured: false, attempted })
         }
         markStructural(false)
         logStep(op, 2, a0, a1, stackBefore, stack, () => `SHOOT ${formatResolved(whereRel)} не прошёл`, {
@@ -1415,7 +1430,7 @@ function runCellProgram(
       }
     }
   }
-  return { actions, matured: false, attempted }
+  return finishRun({ actions, matured: false, attempted })
 }
 
 function processSproutGroup(
@@ -1435,7 +1450,7 @@ function processSproutGroup(
     if (run.actions === 0) {
       if (run.attempted) {
         cell.waitingForGrow = true
-      } else if (cell.y < WORLD.SOIL_Y) {
+      } else if (cell.y < simWorld.SOIL_Y) {
         // Воздушная меристема без сработавшего правила — не созревает, ждёт семя/рост
         cell.waitingForGrow = false
       } else {
@@ -1456,7 +1471,7 @@ function describeMeristemOutcome(
   if (run.matured) return 'GROW — мерistema созрела в ткань'
   if (actionsTaken > 0) return `Выполнено структурных действий: ${actionsTaken}`
   if (run.attempted) return 'Структурное действие не прошло — ждёт (waitingForGrow)'
-  if (cellY < WORLD.SOIL_Y) return 'Ни одно правило не сработало — воздушная мерistema ждёт'
+  if (cellY < simWorld.SOIL_Y) return 'Ни одно правило не сработало — воздушная мерistema ждёт'
   return 'Ни одно правило не сработало — созревает в ROOT/STEM'
 }
 
@@ -1477,7 +1492,7 @@ function traceProcessSproutGroup(
         cellId: cell.id,
         x: cell.x,
         y: cell.y,
-        zone: cell.y >= WORLD.SOIL_Y ? 'soil' : 'air',
+        zone: cell.y >= simWorld.SOIL_Y ? 'soil' : 'air',
         initialDir: cell.dir,
         initialSensors: snapshotSensors(
           ctx.plant,
@@ -1515,7 +1530,7 @@ function traceProcessSproutGroup(
 
     let outcome = describeMeristemOutcome(run, cell.y, run.actions)
     if (run.actions === 0 && !run.attempted) {
-      if (cell.y < WORLD.SOIL_Y) {
+      if (cell.y < simWorld.SOIL_Y) {
         outcome = 'Ни одно правило не сработало — воздушная мерistema ждёт'
       } else {
         outcome = 'Ни одно правило не сработало — созревает в ROOT/STEM'
@@ -1526,7 +1541,7 @@ function traceProcessSproutGroup(
       cellId: cell.id,
       x: cell.x,
       y: cell.y,
-      zone: cell.y >= WORLD.SOIL_Y ? 'soil' : 'air',
+      zone: cell.y >= simWorld.SOIL_Y ? 'soil' : 'air',
       initialDir: cell.dir,
       initialSensors: snapshotSensors(
         ctx.plant,
@@ -1583,10 +1598,10 @@ export function traceGrowthVM(
 
   const sprouts = clone.cells.filter((c) => c.type === 'SPROUT')
   const soilSprouts = sprouts
-    .filter((c) => c.y >= WORLD.SOIL_Y)
+    .filter((c) => c.y >= simWorld.SOIL_Y)
     .sort((a, b) => a.y - b.y || a.id - b.id)
   const airSprouts = sprouts
-    .filter((c) => c.y < WORLD.SOIL_Y)
+    .filter((c) => c.y < simWorld.SOIL_Y)
     .sort((a, b) => a.y - b.y || a.id - b.id)
 
   const growActionBudget = plantGrowActionBudget(clone)
@@ -1631,6 +1646,7 @@ export function executeGrowthVM(
   light: Float32Array,
   minerals: Float32Array,
   rng: Rng,
+  recorder?: GenomeExecutionRecorder,
 ): GrowthResult {
   const newSeeds: { x: number; y: number; energy: number }[] = []
   const shootDeposits: MineralDeposit[] = []
@@ -1646,14 +1662,15 @@ export function executeGrowthVM(
     rng,
     newSeeds,
     shootDeposits,
+    recorder,
   }
 
   const sprouts = plant.cells.filter((c) => c.type === 'SPROUT')
   const soilSprouts = sprouts
-    .filter((c) => c.y >= WORLD.SOIL_Y)
+    .filter((c) => c.y >= simWorld.SOIL_Y)
     .sort((a, b) => a.y - b.y || a.id - b.id)
   const airSprouts = sprouts
-    .filter((c) => c.y < WORLD.SOIL_Y)
+    .filter((c) => c.y < simWorld.SOIL_Y)
     .sort((a, b) => a.y - b.y || a.id - b.id)
 
   const budget = plantGrowActionBudget(plant)
@@ -1689,8 +1706,8 @@ export function findLandingY(
   x: number,
   startY: number,
 ): number {
-  let y = Math.min(WORLD.H - 1, startY)
-  while (y < WORLD.H - 1) {
+  let y = Math.min(simWorld.H - 1, startY)
+  while (y < simWorld.H - 1) {
     const below = y + 1
     if (occupancy[below][x] !== 0) break
     y = below
@@ -1720,7 +1737,7 @@ export function processPlantDeath(
     // гибели лишь возвращают минералы в почву — размножение возможно лишь через
     // семена, сброшенные с надземного побега при жизни.
     if (cell.type === 'SEED') {
-      const landY = Math.max(WORLD.SOIL_Y, findLandingY(occupancy, cell.x, cell.y))
+      const landY = Math.max(simWorld.SOIL_Y, findLandingY(occupancy, cell.x, cell.y))
       seeds.push({
         x: cell.x,
         y: landY,
@@ -1733,8 +1750,8 @@ export function processPlantDeath(
       })
     } else {
       let landY = cell.y
-      if (cell.y < WORLD.SOIL_Y) {
-        landY = Math.max(WORLD.SOIL_Y, findLandingY(occupancy, cell.x, cell.y))
+      if (cell.y < simWorld.SOIL_Y) {
+        landY = Math.max(simWorld.SOIL_Y, findLandingY(occupancy, cell.x, cell.y))
       }
       const amount = Math.max(0.8, cell.cellEnergy) * DEATH_ENERGY_RETURN
       if (amount > 0) deposits.push({ x: cell.x, y: landY, amount })
@@ -1772,10 +1789,10 @@ export function detachFallingSeeds(
       clearOccupancy(occupancy, cell)
       const fromY = cell.y
       let y = fromY
-      while (y < WORLD.H - 1 && occupancy[y + 1][cell.x] === 0) {
+      while (y < simWorld.H - 1 && occupancy[y + 1][cell.x] === 0) {
         y++
       }
-      const landY = Math.max(WORLD.SOIL_Y, y)
+      const landY = Math.max(simWorld.SOIL_Y, y)
       fallen.push({
         x: cell.x,
         y: landY,

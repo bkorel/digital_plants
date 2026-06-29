@@ -8,11 +8,18 @@ import {
   startPerfProbe,
 } from '../dev/perfProbe'
 import type { AppMode, EvolutionSnapshot, Genome, GenomeLineageNode, SavedGenome, ViewMode } from '../sim/types'
+import {
+  formatEvolutionSavedAt,
+  loadEvolutionState,
+  saveEvolutionState,
+} from '../sim/evolutionPersist'
 import { genomeKey } from '../sim/lineage'
+import { resetSimWorld } from '../sim/worldBounds'
 import { World } from '../sim/world'
 import { isWorkerSimulationAvailable, WorldWorkerHost } from '../sim/worldWorkerHost'
 import Controls from './Controls'
 import GenealogyScreen from './GenealogyScreen'
+import GenomeConstructorScreen from './GenomeConstructorScreen'
 import GenomeCompareScreen from './GenomeCompareScreen'
 import GenomeExplorerScreen from './GenomeExplorerScreen'
 import GenomePanel from './GenomePanel'
@@ -25,9 +32,9 @@ import WorldRulesPanel from './WorldRulesPanel'
 
 const COLLECTION_KEY = 'digital-plants-collection'
 
-const FULLSCREEN_MODES: AppMode[] = ['GENOME_EXPLORER', 'GENOME_COMPARE', 'GENEALOGY']
+const FULLSCREEN_MODES: AppMode[] = ['GENOME_EXPLORER', 'GENOME_COMPARE', 'GENEALOGY', 'GENOME_CONSTRUCTOR']
 
-const SIMULATION_BLOCKED_MODES: AppMode[] = ['GENOME_EXPLORER', 'GENOME_COMPARE']
+const SIMULATION_BLOCKED_MODES: AppMode[] = ['GENOME_EXPLORER', 'GENOME_COMPARE', 'GENOME_CONSTRUCTOR']
 
 function isFullscreenMode(mode: AppMode): boolean {
   return FULLSCREEN_MODES.includes(mode)
@@ -142,10 +149,14 @@ export default function App() {
   const [explorerReturnMode, setExplorerReturnMode] = useState<AppMode>('EVOLUTION')
   const [comparePick, setComparePick] = useState<number | null>(null)
   const [comparePair, setComparePair] = useState<{ a: string; b: string } | null>(null)
+  const [constructorGenome, setConstructorGenome] = useState<Genome | null>(null)
   const [autoRandomRestartOnExtinction, setAutoRandomRestartOnExtinction] = useState(false)
   const autoRandomRestartRef = useRef(false)
   const speedAccumRef = useRef(0)
   const [renderTick, setRenderTick] = useState(0)
+  const [evolutionSavedAt, setEvolutionSavedAt] = useState<number | null>(() => {
+    return loadEvolutionState()?.savedAt ?? null
+  })
 
   const refresh = useCallback(() => {
     setRenderTick((n) => n + 1)
@@ -242,7 +253,13 @@ export default function App() {
   }, [appMode, startWorkerSim, stopWorkerSim])
 
   useEffect(() => {
-    const w = new World(seed)
+    const persisted = loadEvolutionState()
+    const w = new World(persisted?.seed ?? seed)
+    if (persisted) {
+      w.restoreEvolution(persisted.snapshot)
+      w.lastRestartUsedRandomGenomes = persisted.lastRestartUsedRandomGenomes
+      if (persisted.seed !== seed) setSeed(persisted.seed)
+    }
     worldRef.current = w
     setWorld(w)
     startPerfProbe()
@@ -419,6 +436,55 @@ export default function App() {
   const handleRandomRestart = () => {
     performRandomRestart()
   }
+
+  const handleSaveEvolution = useCallback((): boolean => {
+    const w = worldRef.current
+    if (!w || appMode !== 'EVOLUTION') return false
+    const snapshot = w.captureEvolution()
+    if (!snapshot) return false
+    const savedAt = Date.now()
+    const ok = saveEvolutionState(snapshot, {
+      seed,
+      lastRestartUsedRandomGenomes: w.lastRestartUsedRandomGenomes,
+      savedAt,
+    })
+    if (ok) {
+      setEvolutionSavedAt(savedAt)
+      return true
+    }
+    alert('Не удалось сохранить — возможно, переполнен localStorage')
+    return false
+  }, [appMode, seed])
+
+  const handleLoadEvolution = useCallback(() => {
+    const persisted = loadEvolutionState()
+    if (!persisted) {
+      alert('Нет сохранённого состояния')
+      return
+    }
+    if (
+      worldRef.current &&
+      !window.confirm(
+        `Загрузить сохранение от ${formatEvolutionSavedAt(persisted.savedAt)} (тик ${persisted.snapshot.tickCount})? Текущий мир будет заменён.`,
+      )
+    ) {
+      return
+    }
+    const w = worldRef.current ?? new World(persisted.seed)
+    w.restoreEvolution(persisted.snapshot)
+    w.lastRestartUsedRandomGenomes = persisted.lastRestartUsedRandomGenomes
+    worldRef.current = w
+    setWorld(w)
+    evolutionSnapshotRef.current = null
+    setSeed(persisted.seed)
+    setEvolutionSavedAt(persisted.savedAt)
+    setSelectedPlantId(persisted.snapshot.selectedPlantId)
+    setPaused(false)
+    setAppMode('EVOLUTION')
+    workerHostRef.current?.restoreFromDisplay()
+    resyncWorkerFromMain()
+    refresh()
+  }, [refresh, resyncWorkerFromMain])
 
   const handleSeedChange = (newSeed: number) => {
     if (appMode === 'LABORATORY') return
@@ -631,6 +697,27 @@ export default function App() {
     refresh()
   }
 
+  const handleEnterConstructor = (genome?: Genome) => {
+    if (appMode !== 'GENOME_CONSTRUCTOR') {
+      setExplorerReturnMode(appMode === 'LABORATORY' ? 'LABORATORY' : 'EVOLUTION')
+    }
+    if (genome) {
+      setConstructorGenome(cloneGenome(genome))
+    } else {
+      const plant = worldRef.current?.selectedPlant()
+      setConstructorGenome(plant ? cloneGenome(plant.genome) : null)
+    }
+    setAppMode('GENOME_CONSTRUCTOR')
+    setPaused(true)
+    refresh()
+  }
+
+  const handleExitConstructor = () => {
+    setConstructorGenome(null)
+    resetSimWorld()
+    handleExitFullscreenMode()
+  }
+
   const handleExitLaboratory = () => {
     setAppMode('EVOLUTION')
     setLabSpecimen(null)
@@ -739,6 +826,16 @@ export default function App() {
           </button>
           <button
             type="button"
+            className={appMode === 'GENOME_CONSTRUCTOR' ? 'active' : ''}
+            onClick={() => {
+              if (appMode === 'GENOME_CONSTRUCTOR') handleExitConstructor()
+              else handleEnterConstructor()
+            }}
+          >
+            Конструктор
+          </button>
+          <button
+            type="button"
             className={appMode === 'GENOME_EXPLORER' ? 'active' : ''}
             onClick={() => handleEnterGenomeExplorer(selectedPlantId)}
           >
@@ -754,7 +851,26 @@ export default function App() {
         </div>
       </header>
 
-      {appMode === 'GENOME_EXPLORER' ? (
+      {appMode === 'GENOME_CONSTRUCTOR' ? (
+        <GenomeConstructorScreen
+          initialGenome={constructorGenome ?? undefined}
+          collection={collection}
+          onBack={handleExitConstructor}
+          onSaveToCollection={(g, name) => {
+            const item: SavedGenome = {
+              id: crypto.randomUUID(),
+              name,
+              genome: cloneGenome(g),
+              savedAt: Date.now(),
+            }
+            setCollection((prev) => {
+              const next = [item, ...prev]
+              saveCollection(next)
+              return next
+            })
+          }}
+        />
+      ) : appMode === 'GENOME_EXPLORER' ? (
         <GenomeExplorerScreen
           world={world}
           plant={explorerPlant ?? selectedPlant}
@@ -805,10 +921,13 @@ export default function App() {
             speed={speed}
             appMode="EVOLUTION"
             autoRandomRestartOnExtinction={autoRandomRestartOnExtinction}
+            evolutionSavedAt={evolutionSavedAt}
             onPauseToggle={() => setPaused((p) => !p)}
             onStep={handleStep}
             onRestart={handleRestart}
             onRandomRestart={handleRandomRestart}
+            onSaveEvolution={handleSaveEvolution}
+            onLoadEvolution={handleLoadEvolution}
             onAutoRandomRestartChange={setAutoRandomRestartOnExtinction}
             onSpeedChange={setSpeed}
           />
@@ -850,10 +969,13 @@ export default function App() {
           speed={speed}
           appMode={appMode}
           autoRandomRestartOnExtinction={autoRandomRestartOnExtinction}
+          evolutionSavedAt={evolutionSavedAt}
           onPauseToggle={() => setPaused((p) => !p)}
           onStep={handleStep}
           onRestart={handleRestart}
           onRandomRestart={handleRandomRestart}
+          onSaveEvolution={handleSaveEvolution}
+          onLoadEvolution={handleLoadEvolution}
           onAutoRandomRestartChange={setAutoRandomRestartOnExtinction}
           onSpeedChange={setSpeed}
         />
@@ -899,6 +1021,7 @@ export default function App() {
           onPlantFromCollection={handlePlantGenome}
           onPlantFromPaste={handlePlantPaste}
           onExploreGenome={() => handleEnterGenomeExplorer(selectedPlantId)}
+          onOpenConstructor={() => handleEnterConstructor(selectedPlant?.genome)}
           onCompareGenomes={() => handleStartComparePick(selectedPlantId)}
           comparePickActive={comparePick != null}
         />

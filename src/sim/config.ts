@@ -6,6 +6,18 @@ export const WORLD = {
   SOIL_Y: 124,
 } as const
 
+/** Мир конструктора: половина ширины эволюции, полная высота */
+export const LAB_WORLD = {
+  W: 150,
+  H: 200,
+  SOIL_Y: 124,
+} as const
+
+export type WorldBounds = { readonly W: number; readonly H: number; readonly SOIL_Y: number }
+
+/** Минимальная дистанция между растениями в мини-лаборатории конструктора */
+export const LAB_MIN_PLANT_SPACING = 1
+
 /** Градиент освещённости в воздухе — как при прежней высоте неба (62 клетки) */
 export const SKY_LIGHT_RAMP = 62
 

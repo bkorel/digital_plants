@@ -1,4 +1,6 @@
-import { GERMINATION_CHANCE, GERMINATION_NEIGHBOR_BLOCK, INITIAL_PLANTS, MAX_GERMINATIONS_PER_TICK, MIN_PLANT_SPACING, MIN_SEED_ENERGY, MINERAL_ENERGY_FACTOR, SEED_FALL_DURATION_TICKS, SEED_GERMINATION_TICKS, SEED_MIN_PAYLOAD, SEED_SCATTER, SEED_SOIL_UPKEEP, SHOOT_VISUAL_TTL, WORLD } from './config'
+import { GERMINATION_CHANCE, GERMINATION_NEIGHBOR_BLOCK, INITIAL_PLANTS, LAB_MIN_PLANT_SPACING, MAX_GERMINATIONS_PER_TICK, MIN_PLANT_SPACING, MIN_SEED_ENERGY, MINERAL_ENERGY_FACTOR, SEED_FALL_DURATION_MS, SEED_FALL_DURATION_TICKS, SEED_GERMINATION_TICKS, SEED_MIN_PAYLOAD, SEED_SCATTER, SEED_SOIL_UPKEEP, SHOOT_VISUAL_TTL, type WorldBounds } from './config'
+import type { GenomeExecutionRecorder } from './genomeExecution'
+import { simWorld } from './worldBounds'
 import { offsetX, wrapX, xDistance } from './coords'
 import {
   computeLightGridInto,
@@ -76,25 +78,34 @@ export class World {
   tickEvents: PlantTickEvent[] = []
   /** Недавние выстрелы шипов — для красных линий в режимах «Растения» / «Ткани» */
   recentShoots: ShootVisual[] = []
+  /** Колбэк для лаборатории конструктора: исход семени */
+  seedOutcomeListener: ((outcome: 'germinated' | 'decayed', seed: SeedInSoil) => void) | null = null
+  /** Запись исполнения генома в конструкторе */
+  labGrowthRecorder: GenomeExecutionRecorder | null = null
   /** Переиспользуемые буферы для diffuseMinerals (без аллокаций каждый тик) */
   private readonly mineralScratchNext: Float32Array
   private readonly mineralScratchLateral: Float32Array
   readonly lineage = new LineageRegistry()
+  /** Размеры мира зафиксированы при создании (не зависят от глобального simWorld). */
+  readonly bounds: WorldBounds
 
-  constructor(seed = 42) {
+  constructor(seed = 42, options?: { empty?: boolean }) {
+    this.bounds = { W: simWorld.W, H: simWorld.H, SOIL_Y: simWorld.SOIL_Y }
     this.rng = new Rng(seed)
     this.minerals = initMinerals()
-    this.occupancy = Array.from({ length: WORLD.H }, () => new Int32Array(WORLD.W))
-    this.light = new Float32Array(WORLD.W * WORLD.H)
-    this.mineralScratchNext = new Float32Array(WORLD.W * WORLD.H)
-    this.mineralScratchLateral = new Float32Array(WORLD.W * WORLD.H)
+    this.occupancy = Array.from({ length: this.bounds.H }, () => new Int32Array(this.bounds.W))
+    this.light = new Float32Array(this.bounds.W * this.bounds.H)
+    this.mineralScratchNext = new Float32Array(this.bounds.W * this.bounds.H)
+    this.mineralScratchLateral = new Float32Array(this.bounds.W * this.bounds.H)
     resetIdCounters()
-    this.seedInitialPlants(INITIAL_PLANTS)
+    if (!options?.empty) {
+      this.seedInitialPlants(INITIAL_PLANTS)
+    }
     this.resyncOccupancy()
   }
 
   private syncOccupancyFromPlants(): void {
-    for (let y = 0; y < WORLD.H; y++) {
+    for (let y = 0; y < simWorld.H; y++) {
       this.occupancy[y].fill(0)
     }
     for (const seed of this.seeds) {
@@ -132,7 +143,7 @@ export class World {
 
   /** Свободная ячейка на поверхности почвы в радиусе maxScatter от originX */
   private findSeedSurfaceSlot(originX: number, maxScatter = SEED_SCATTER): { x: number; y: number } | null {
-    const y = WORLD.SOIL_Y
+    const y = simWorld.SOIL_Y
     const offsets: number[] = []
     for (let dx = -maxScatter; dx <= maxScatter; dx++) offsets.push(dx)
     const start = this.rng.nextInt(0, offsets.length - 1)
@@ -157,6 +168,8 @@ export class World {
       lineageHue: seed.lineageHue,
       fromY: seed.fromY,
       parentPlantId: seed.parentPlantId,
+      createdAtTick: seed.createdAtTick ?? this.tickCount,
+      outcome: seed.outcome ?? 'pending',
     })
     this.markSoilSeed(slot.x, slot.y)
     return true
@@ -164,10 +177,10 @@ export class World {
 
   /** Верхняя свободная клетка почвы в колонке (рост начинается с уровня почвы) */
   private findSpawnY(x: number): number {
-    for (let y = WORLD.SOIL_Y; y < WORLD.H; y++) {
+    for (let y = simWorld.SOIL_Y; y < simWorld.H; y++) {
       if (!this.isOccupied(x, y)) return y
     }
-    return WORLD.SOIL_Y
+    return simWorld.SOIL_Y
   }
 
   private queueSeedFall(seed: SeedInSoil): void {
@@ -178,7 +191,7 @@ export class World {
       this.findSeedSurfaceSlot(originX, SEED_SCATTER + 3)
     if (!slot) return
 
-    if (fromY < WORLD.SOIL_Y) {
+    if (fromY < simWorld.SOIL_Y) {
       this.fallingSeeds.push({
         x: slot.x,
         fromY,
@@ -234,12 +247,12 @@ export class World {
   seedInitialPlants(count: number, randomGenomes = false): void {
     const usedX = new Set<number>()
     for (let i = 0; i < count; i++) {
-      let x = this.rng.nextInt(0, WORLD.W - 1)
+      let x = this.rng.nextInt(0, simWorld.W - 1)
       let attempts = 0
       while (attempts < 80) {
-        const tooClose = [...usedX].some((ux) => xDistance(ux, x) < MIN_PLANT_SPACING)
+        const tooClose = [...usedX].some((ux) => xDistance(ux, x) < this.plantSpacing())
         if (!tooClose) break
-        x = this.rng.nextInt(0, WORLD.W - 1)
+        x = this.rng.nextInt(0, simWorld.W - 1)
         attempts++
       }
       usedX.add(x)
@@ -272,7 +285,7 @@ export class World {
   spawnFromGenome(genomeJson: string, x?: number, _y?: number): boolean {
     try {
       const genome = deserializeGenome(genomeJson)
-      return this.plantGenomeAt(genome, x ?? this.rng.nextInt(0, WORLD.W - 1), false) != null
+      return this.plantGenomeAt(genome, x ?? this.rng.nextInt(0, simWorld.W - 1), false) != null
     } catch {
       return false
     }
@@ -282,7 +295,7 @@ export class World {
   plantingColumnBlockers(columnX: number): { x: number; y: number; plantId: number }[] {
     const gx = wrapX(Math.floor(columnX))
     const blockers: { x: number; y: number; plantId: number }[] = []
-    for (let y = 0; y < WORLD.H; y++) {
+    for (let y = 0; y < simWorld.H; y++) {
       const occ = this.occupancy[y][gx]
       if (occ === SEED_OCC) blockers.push({ x: gx, y, plantId: 0 })
       else if (occ > 0) blockers.push({ x: gx, y, plantId: occ })
@@ -325,7 +338,7 @@ export class World {
    */
   plantGenomeAt(genome: Genome, x: number, laboratory = false): Plant | null {
     const gx = wrapX(Math.floor(x))
-    const gy = WORLD.SOIL_Y
+    const gy = simWorld.SOIL_Y
 
     if (laboratory) {
       this.seeds = []
@@ -391,7 +404,7 @@ export class World {
     for (const plant of this.plants) {
       if (plant.dead) continue
       for (const cell of plant.cells) {
-        const isRootLike = cell.type === 'ROOT' || (cell.type === 'SPROUT' && cell.y >= WORLD.SOIL_Y)
+        const isRootLike = cell.type === 'ROOT' || (cell.type === 'SPROUT' && cell.y >= simWorld.SOIL_Y)
         if (!isRootLike) continue
         const uptake = uptakeMinerals(this.minerals, cell.x, cell.y, 1)
         if (uptake > 0) uptakeByCell.set(cell.id, uptake)
@@ -452,7 +465,17 @@ export class World {
     const fallenSeeds: SeedInSoil[] = []
     for (const plant of this.plants) {
       if (plant.dead) continue
-      const growth = executeGrowthVM(plant, this.plants, this.occupancy, this.light, this.minerals, this.rng)
+      const recorder =
+        this.mode === 'GENOME_CONSTRUCTOR' ? (this.labGrowthRecorder ?? undefined) : undefined
+      const growth = executeGrowthVM(
+        plant,
+        this.plants,
+        this.occupancy,
+        this.light,
+        this.minerals,
+        this.rng,
+        recorder,
+      )
       for (const dep of growth.shootDeposits) {
         depositMinerals(this.minerals, dep.x, dep.y, dep.amount)
       }
@@ -507,7 +530,7 @@ export class World {
       if (plant.dead) continue
       const surfaceColumns = new Set<number>()
       for (const cell of plant.cells) {
-        if (cell.y <= WORLD.SOIL_Y) surfaceColumns.add(cell.x)
+        if (cell.y <= simWorld.SOIL_Y) surfaceColumns.add(cell.x)
       }
       for (const px of surfaceColumns) {
         for (let d = 1; d <= GERMINATION_NEIGHBOR_BLOCK; d++) {
@@ -528,8 +551,9 @@ export class World {
   }
 
   private isTooCloseForGermination(x: number, surfaceColumns: Set<number>): boolean {
+    const spacing = this.plantSpacing()
     for (const sx of surfaceColumns) {
-      if (xDistance(sx, x) < MIN_PLANT_SPACING) return true
+      if (xDistance(sx, x) < spacing) return true
     }
     return false
   }
@@ -542,7 +566,7 @@ export class World {
     for (const plant of this.plants) {
       if (plant.dead) continue
       for (const cell of plant.cells) {
-        if (cell.y <= WORLD.SOIL_Y) surfaceColumns.add(cell.x)
+        if (cell.y <= simWorld.SOIL_Y) surfaceColumns.add(cell.x)
       }
     }
 
@@ -550,11 +574,13 @@ export class World {
       seed.ticksInSoil++
 
       if (seed.energy < MIN_SEED_ENERGY) {
+        seed.outcome = 'decayed'
+        this.seedOutcomeListener?.('decayed', seed)
         this.unmarkSoilSeed(seed.x, seed.y)
         continue
       }
 
-      const spawnY = WORLD.SOIL_Y
+      const spawnY = simWorld.SOIL_Y
       const ready =
         seed.ticksInSoil >= SEED_GERMINATION_TICKS && seed.energy >= MIN_SEED_ENERGY
       if (
@@ -566,6 +592,8 @@ export class World {
         this.rng.chance(GERMINATION_CHANCE)
       ) {
         const genome = this.rng.chance(0.1) ? mutate(seed.genome, this.rng) : seed.genome
+        seed.outcome = 'germinated'
+        this.seedOutcomeListener?.('germinated', seed)
         this.unmarkSoilSeed(seed.x, seed.y)
         const plant = createPlant(
           genome,
@@ -603,6 +631,8 @@ export class World {
         seed.energy = Math.max(0, seed.energy - SEED_SOIL_UPKEEP)
       }
       if (seed.energy < MIN_SEED_ENERGY) {
+        seed.outcome = 'decayed'
+        this.seedOutcomeListener?.('decayed', seed)
         this.unmarkSoilSeed(seed.x, seed.y)
         continue
       }
@@ -637,15 +667,23 @@ export class World {
     this.tickCount = snapshot.tickCount
     this.plants = snapshot.plants.map(clonePlant)
     this.seeds = snapshot.seeds.map(cloneSeed)
-    this.fallingSeeds = snapshot.fallingSeeds.map(cloneFallingSeed)
+    const msPerTick = SEED_FALL_DURATION_MS / SEED_FALL_DURATION_TICKS
+    this.fallingSeeds = snapshot.fallingSeeds.map((f) => {
+      const seed = cloneFallingSeed(f)
+      seed.startTime = performance.now() - (this.tickCount - seed.startTick) * msPerTick
+      return seed
+    })
     this.minerals = new Float32Array(snapshot.minerals)
     this.occupancy = cloneOccupancy(snapshot.occupancy)
     this.rng.setState(snapshot.rngState)
     setIdCounters(snapshot.nextPlantId, snapshot.nextCellId)
     this.selectedPlantId = snapshot.selectedPlantId
+    this.recentShoots = []
+    this.tickEvents = []
     this.lineage.restore(snapshot.lineage)
     this.syncLineage()
     this.resyncOccupancy()
+    this.rebuildLight()
   }
 
   restart(seed?: number, randomGenomes = false): void {
@@ -661,12 +699,41 @@ export class World {
     this.selectedPlantId = null
     this.recentShoots = []
     this.minerals = initMinerals()
-    this.occupancy = Array.from({ length: WORLD.H }, () => new Int32Array(WORLD.W))
+    this.occupancy = Array.from({ length: simWorld.H }, () => new Int32Array(simWorld.W))
     resetIdCounters()
     this.lineage.clear()
     this.seedInitialPlants(INITIAL_PLANTS, randomGenomes)
     this.resyncOccupancy()
     this.syncLineage()
+  }
+
+  private plantSpacing(): number {
+    return this.mode === 'GENOME_CONSTRUCTOR' ? LAB_MIN_PLANT_SPACING : MIN_PLANT_SPACING
+  }
+
+  /** Пустой мини-мир для генетического конструктора. */
+  startConstructorLab(genome: Genome): Plant {
+    this.mode = 'GENOME_CONSTRUCTOR'
+    this.tickCount = 0
+    this.plants = []
+    this.seeds = []
+    this.fallingSeeds = []
+    this.selectedPlantId = null
+    this.recentShoots = []
+    this.minerals = initMinerals()
+    this.occupancy = Array.from({ length: simWorld.H }, () => new Int32Array(simWorld.W))
+    resetIdCounters()
+
+    const x = Math.floor(simWorld.W / 2)
+    const y = simWorld.SOIL_Y
+    const plant = createPlant(genome, x, y, genomeHue(genome), 12)
+    this.plants.push(plant)
+    this.registerPlantLineage(plant, 'laboratory')
+    this.occupancy[y][x] = plant.id
+    this.selectedPlantId = plant.id
+    this.resyncOccupancy()
+    this.syncLineage()
+    return plant
   }
 
   /** Пустой мир с одним экземпляром из коллекции (без прорастания семян). */
@@ -679,11 +746,11 @@ export class World {
     this.selectedPlantId = null
     this.recentShoots = []
     this.minerals = initMinerals()
-    this.occupancy = Array.from({ length: WORLD.H }, () => new Int32Array(WORLD.W))
+    this.occupancy = Array.from({ length: simWorld.H }, () => new Int32Array(simWorld.W))
     resetIdCounters()
 
-    const x = Math.floor(WORLD.W / 2)
-    const y = WORLD.SOIL_Y
+    const x = Math.floor(simWorld.W / 2)
+    const y = simWorld.SOIL_Y
     const plant = createPlant(genome, x, y, genomeHue(genome), 12)
     this.plants.push(plant)
     this.registerPlantLineage(plant, 'laboratory')
@@ -704,7 +771,7 @@ export class World {
     this.selectedPlantId = null
     this.recentShoots = []
     this.minerals = initMinerals()
-    this.occupancy = Array.from({ length: WORLD.H }, () => new Int32Array(WORLD.W))
+    this.occupancy = Array.from({ length: simWorld.H }, () => new Int32Array(simWorld.W))
     resetIdCounters()
     this.rebuildLight()
   }

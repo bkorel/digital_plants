@@ -1,4 +1,5 @@
-import { DEATH_ENERGY_RETURN, SHADED_SPROUT_LAYERS, SPIKE_LEAF_KILL_RADIUS, WORLD } from './config'
+import { DEATH_ENERGY_RETURN, SHADED_SPROUT_LAYERS, SPIKE_LEAF_KILL_RADIUS } from './config'
+import { simWorld } from './worldBounds'
 import { isYInBounds, offsetX, xDistance } from './coords'
 import { shadeLayersAbove } from './environment'
 import { genomeShadeSenescence } from './genome'
@@ -20,11 +21,11 @@ export interface MineralDeposit {
 }
 
 function isAir(y: number): boolean {
-  return y < WORLD.SOIL_Y
+  return y < simWorld.SOIL_Y
 }
 
 function isSoil(y: number): boolean {
-  return y >= WORLD.SOIL_Y
+  return y >= simWorld.SOIL_Y
 }
 
 /** Корневая ткань в почве. */
@@ -67,7 +68,7 @@ function removeAirCell(
 ): void {
   occupancy[cell.y][cell.x] = 0
   plant.cells = plant.cells.filter((c) => c.id !== cell.id)
-  const landY = Math.max(WORLD.SOIL_Y, findLandingY(occupancy, cell.x, cell.y))
+  const landY = Math.max(simWorld.SOIL_Y, findLandingY(occupancy, cell.x, cell.y))
   deposits.push({
     x: cell.x,
     y: landY,
@@ -102,7 +103,7 @@ function pruneFloatingAirParts(
   const queue: PlantCell[] = []
 
   for (const cell of plant.cells) {
-    if (cell.y >= WORLD.SOIL_Y) {
+    if (cell.y >= simWorld.SOIL_Y) {
       anchored.add(cell.id)
       queue.push(cell)
     }
@@ -363,7 +364,7 @@ export function clearPlantingColumn(
   const deposits: MineralDeposit[] = []
   const affected = new Set<number>()
 
-  for (let y = 0; y < WORLD.H; y++) {
+  for (let y = 0; y < simWorld.H; y++) {
     const occ = occupancy[y][columnX]
     if (occ <= 0) continue
 

@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react'
 import type { AppMode } from '../sim/types'
 import { SPEED_STEPS, formatSpeed, speedToIndex } from './speed'
 
@@ -6,12 +7,24 @@ interface Props {
   speed: number
   appMode: AppMode
   autoRandomRestartOnExtinction: boolean
+  evolutionSavedAt?: number | null
   onPauseToggle: () => void
   onStep: () => void
   onRestart: () => void
   onRandomRestart?: () => void
+  onSaveEvolution?: () => boolean
+  onLoadEvolution?: () => void
   onAutoRandomRestartChange: (enabled: boolean) => void
   onSpeedChange: (speed: number) => void
+}
+
+function formatSavedAt(savedAt: number): string {
+  return new Date(savedAt).toLocaleString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
 }
 
 export default function SimulationBar({
@@ -19,13 +32,32 @@ export default function SimulationBar({
   speed,
   appMode,
   autoRandomRestartOnExtinction,
+  evolutionSavedAt = null,
   onPauseToggle,
   onStep,
   onRestart,
   onRandomRestart,
+  onSaveEvolution,
+  onLoadEvolution,
   onAutoRandomRestartChange,
   onSpeedChange,
 }: Props) {
+  const [saveNotice, setSaveNotice] = useState(false)
+  const saveNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (saveNoticeTimerRef.current) clearTimeout(saveNoticeTimerRef.current)
+    }
+  }, [])
+
+  const handleSaveClick = () => {
+    if (!onSaveEvolution?.()) return
+    setSaveNotice(true)
+    if (saveNoticeTimerRef.current) clearTimeout(saveNoticeTimerRef.current)
+    saveNoticeTimerRef.current = setTimeout(() => setSaveNotice(false), 2000)
+  }
+
   return (
     <div className="simulation-bar">
       <div className="controls-row simulation-bar__buttons">
@@ -55,6 +87,35 @@ export default function SimulationBar({
           >
             Рестарт случайный
           </button>
+        )}
+        {appMode === 'EVOLUTION' && onSaveEvolution && onLoadEvolution && (
+          <>
+            <button
+              type="button"
+              className="simulation-bar__save"
+              onClick={handleSaveClick}
+              title="Сохранить мир в браузере (продолжить после перезагрузки страницы)"
+            >
+              Сохранить
+            </button>
+            {saveNotice && (
+              <span className="simulation-bar__save-notice" role="status">
+                Сохранено
+              </span>
+            )}
+            <button
+              type="button"
+              className="simulation-bar__load"
+              onClick={onLoadEvolution}
+              title={
+                evolutionSavedAt != null
+                  ? `Загрузить сохранение от ${formatSavedAt(evolutionSavedAt)}`
+                  : 'Загрузить сохранение из браузера'
+              }
+            >
+              Загрузить
+            </button>
+          </>
         )}
         {appMode === 'EVOLUTION' && (
           <label

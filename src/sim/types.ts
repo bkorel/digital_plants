@@ -66,6 +66,8 @@ export interface Plant {
 /** Счётчики энергии и размножения за всю жизнь растения */
 export interface PlantAccounting {
   seedsCreated: number
+  spikesCreated: number
+  shootsFired: number
   photoEnergyGained: number
   mineralEnergyGained: number
   upkeepSpent: number
@@ -87,6 +89,8 @@ export interface PlantInspectStats {
   totalEnergy: number
 }
 
+export type SeedOutcome = 'pending' | 'germinated' | 'decayed'
+
 export interface SeedInSoil {
   x: number
   y: number
@@ -97,6 +101,8 @@ export interface SeedInSoil {
   lineageHue: number
   /** Родительское растение, сбросившее семя */
   parentPlantId?: number
+  createdAtTick?: number
+  outcome?: SeedOutcome
 }
 
 export interface WorldStats {
@@ -116,6 +122,7 @@ export type ViewMode = 'PLANTS' | 'ENERGY' | 'FLOWS' | 'ANATOMY' | 'TRACE'
 export type AppMode =
   | 'EVOLUTION'
   | 'LABORATORY'
+  | 'GENOME_CONSTRUCTOR'
   | 'GENOME_EXPLORER'
   | 'GENOME_COMPARE'
   | 'GENEALOGY'

@@ -1,10 +1,13 @@
-import { CAP, MINERAL_CAP, WORLD } from '../sim/config'
+import { CAP, MINERAL_CAP } from '../sim/config'
+import { simWorld } from '../sim/worldBounds'
 import { genomeColor } from '../sim/genome'
 import { getMineralAt } from '../sim/environment'
 import type { CellType, Plant, ViewMode } from '../sim/types'
 import type { World } from '../sim/world'
 
-export const GRID_PIXELS = WORLD.W * WORLD.H
+export function gridPixels(): number {
+  return simWorld.W * simWorld.H
+}
 
 /** ABGR для Uint32Array (little-endian → ImageData RGBA) */
 export function packPixel(r: number, g: number, b: number, a = 255): number {
@@ -72,7 +75,7 @@ function anatomyPixel(type: CellType, dimmed: boolean, selected: boolean): numbe
 }
 
 function anatomyTissueType(cell: { type: CellType; y: number }): CellType {
-  if (cell.type === 'SPROUT' && cell.y >= WORLD.SOIL_Y) return 'ROOT'
+  if (cell.type === 'SPROUT' && cell.y >= simWorld.SOIL_Y) return 'ROOT'
   return cell.type
 }
 
@@ -81,13 +84,13 @@ export function fillSoilPixels(
   world: World,
   viewMode: ViewMode,
 ): void {
-  for (let y = WORLD.SOIL_Y; y < WORLD.H; y++) {
-    for (let x = 0; x < WORLD.W; x++) {
-      const idx = y * WORLD.W + x
+  for (let y = simWorld.SOIL_Y; y < simWorld.H; y++) {
+    for (let x = 0; x < simWorld.W; x++) {
+      const idx = y * simWorld.W + x
       if (viewMode === 'ENERGY') {
         pixels[idx] = mineralPixel(getMineralAt(world.minerals, x, y))
       } else {
-        const depth = (y - WORLD.SOIL_Y) / (WORLD.H - WORLD.SOIL_Y)
+        const depth = (y - simWorld.SOIL_Y) / (simWorld.H - simWorld.SOIL_Y)
         pixels[idx] = hslPixel(30, 25, 12 + depth * 18)
       }
     }
@@ -95,16 +98,16 @@ export function fillSoilPixels(
 }
 
 export function fillSkyPixels(pixels: Uint32Array, world: World): void {
-  for (let y = 0; y < WORLD.SOIL_Y; y++) {
-    for (let x = 0; x < WORLD.W; x++) {
-      const light = world.light[y * WORLD.W + x]
+  for (let y = 0; y < simWorld.SOIL_Y; y++) {
+    for (let x = 0; x < simWorld.W; x++) {
+      const light = world.light[y * simWorld.W + x]
       pixels[idxAt(x, y)] = hslPixel(200, 30, 8 + light * 12)
     }
   }
 }
 
 function idxAt(x: number, y: number): number {
-  return y * WORLD.W + x
+  return y * simWorld.W + x
 }
 
 /** Яркий цвет семени (клетка на растении, в почве, падение). */
@@ -180,18 +183,24 @@ export function getPixelLayer(
   }
 
   const canvas = document.createElement('canvas')
-  canvas.width = WORLD.W
-  canvas.height = WORLD.H
+  canvas.width = simWorld.W
+  canvas.height = simWorld.H
   const ctx = canvas.getContext('2d')
   if (!ctx) return canvas
 
-  const imageData = ctx.createImageData(WORLD.W, WORLD.H)
+  const imageData = ctx.createImageData(simWorld.W, simWorld.H)
   const pixels = new Uint32Array(imageData.data.buffer)
   paint(pixels)
   ctx.putImageData(imageData, 0, 0)
 
   cacheRef.current = { canvas, key, pixels, imageData }
   return canvas
+}
+
+export function blitPlantLayerOnto(dst: Uint32Array, src: Uint32Array): void {
+  for (let i = 0; i < dst.length; i++) {
+    if (src[i] !== 0) dst[i] = src[i]
+  }
 }
 
 /** Собрать слой растений в пиксельную сетку 1px/клетку (переиспользует буфер). */
@@ -226,7 +235,7 @@ export function buildPlantsPixelLayer(
   selectedPlantId: number | null,
   showTrace: boolean,
 ): Uint32Array {
-  const pixels = new Uint32Array(GRID_PIXELS)
+  const pixels = new Uint32Array(gridPixels())
   buildPlantsPixelLayerInto(pixels, world, viewMode, selectedPlantId, showTrace)
   return pixels
 }
@@ -236,9 +245,14 @@ export function blitPixelGrid(
   source: HTMLCanvasElement | OffscreenCanvas,
   destW: number,
   destH: number,
+  crop?: { sx: number; sy: number; sw: number; sh: number },
 ): void {
   const prevSmooth = ctx.imageSmoothingEnabled
   ctx.imageSmoothingEnabled = false
-  ctx.drawImage(source, 0, 0, destW, destH)
+  if (crop) {
+    ctx.drawImage(source, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, destW, destH)
+  } else {
+    ctx.drawImage(source, 0, 0, destW, destH)
+  }
   ctx.imageSmoothingEnabled = prevSmooth
 }

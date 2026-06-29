@@ -27,6 +27,7 @@ interface Props {
   onPlantFromCollection: (genome: Genome) => void
   onPlantFromPaste: (json: string) => void
   onExploreGenome?: () => void
+  onOpenConstructor?: () => void
   onCompareGenomes?: () => void
   comparePickActive?: boolean
 }
@@ -40,6 +41,7 @@ export default function GenomePanel({
   onPlantFromCollection,
   onPlantFromPaste,
   onExploreGenome,
+  onOpenConstructor,
   onCompareGenomes,
   comparePickActive,
 }: Props) {
@@ -162,6 +164,11 @@ export default function GenomePanel({
         {onExploreGenome && (
           <button type="button" className="btn-explore" onClick={onExploreGenome}>
             Исследовать геном
+          </button>
+        )}
+        {onOpenConstructor && (
+          <button type="button" className="btn-constructor" onClick={onOpenConstructor}>
+            Открыть в конструкторе
           </button>
         )}
         {onCompareGenomes && !comparePickActive && (
