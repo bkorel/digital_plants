@@ -566,10 +566,29 @@ textarea {
 
 .app--genome-explorer > .genome-compare,
 .app--genome-explorer > .genome-explorer,
-.app--genome-explorer > .genealogy {
+.app--genome-explorer > .genealogy,
+.app--genome-explorer > .genealogy-shell {
   grid-row: 2;
   min-height: 0;
   align-self: stretch;
+}
+
+.genealogy-shell {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.genealogy-shell > .genealogy {
+  flex: 1;
+  min-height: 0;
+}
+
+.genealogy-shell > .simulation-bar {
+  flex-shrink: 0;
+  margin: 0 10px 10px;
 }
 
 button.btn-explore {
@@ -1394,6 +1413,111 @@ button.btn-compare:hover {
   color: #c8e0c0;
 }
 
+.genealogy__live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  color: #8fd48f;
+  font-variant-numeric: tabular-nums;
+}
+
+.genealogy__live--paused {
+  color: #c8b888;
+}
+
+.genealogy__live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #5cd85c;
+  box-shadow: 0 0 6px rgba(92, 216, 92, 0.7);
+  animation: genealogy-pulse 1.4s ease-in-out infinite;
+}
+
+.genealogy__live--paused .genealogy__live-dot {
+  background: #c8b888;
+  box-shadow: none;
+  animation: none;
+}
+
+@keyframes genealogy-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.55; transform: scale(0.85); }
+}
+
+.genealogy__evolution-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 4px;
+}
+
+.genealogy__evolution-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  font-size: 0.8rem;
+  color: #aabaaa;
+}
+
+.genealogy__evolution-stats-new {
+  color: #9ed89e;
+}
+
+.genealogy__recent {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.genealogy__recent-label {
+  font-size: 0.78rem;
+  color: #8a9a8a;
+  flex-shrink: 0;
+}
+
+.genealogy__recent-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.genealogy__recent-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px 3px 4px;
+  border: 1px solid #3a4a3a;
+  border-radius: 999px;
+  background: #141a14;
+  color: #d8e8d8;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.genealogy__recent-chip:hover {
+  background: #1a221a;
+}
+
+.genealogy__recent-chip--fresh {
+  background: rgba(60, 140, 70, 0.18);
+  animation: genealogy-chip-in 0.6s ease-out;
+}
+
+@keyframes genealogy-chip-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.genealogy__recent-chip-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
 .genealogy__layout {
   flex: 1;
   min-height: 12rem;
@@ -1501,6 +1625,19 @@ button.btn-compare:hover {
 
 .genealogy__row--carrier {
   background: #141a14;
+}
+
+.genealogy__row--new {
+  border-left: 2px solid #6cc86c;
+}
+
+.genealogy__row--fresh {
+  animation: genealogy-row-fresh 1.2s ease-out;
+}
+
+@keyframes genealogy-row-fresh {
+  from { background: rgba(80, 180, 90, 0.35); }
+  to { background: transparent; }
 }
 
 .genealogy__row--ancestor {

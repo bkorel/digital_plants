@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { genomeColor } from '../sim/genome'
 import {
   genomeKey,
@@ -6,12 +6,29 @@ import {
   type GenomeLineageNode,
 } from '../sim/lineage'
 import { World } from '../sim/world'
+import { formatSpeed } from './speed'
 
 interface Props {
   world: World
   frame: number
+  paused: boolean
+  speed: number
+  onPauseToggle: () => void
+  onStep: () => void
   onBack: () => void
   onCompare: (firstKey: string, secondKey: string) => void
+}
+
+const RECENT_TICK_WINDOW = 50
+
+function isSurvivor(
+  node: GenomeLineageNode,
+  seedCountByKey: Map<string, number>,
+  hasLivingDescendants: (key: string) => boolean,
+): boolean {
+  if (node.livingCount > 0) return true
+  if ((seedCountByKey.get(node.genomeKey) ?? 0) > 0) return true
+  return hasLivingDescendants(node.genomeKey)
 }
 
 interface TreeRow {
@@ -161,8 +178,20 @@ function LifespanBar({
   )
 }
 
-export default function GenealogyScreen({ world, frame, onBack, onCompare }: Props) {
+export default function GenealogyScreen({
+  world,
+  frame,
+  paused,
+  speed,
+  onPauseToggle,
+  onStep,
+  onBack,
+  onCompare,
+}: Props) {
   const [lineageRevision, setLineageRevision] = useState(() => world.lineage.revision)
+  const entryTickRef = useRef(world.tickCount)
+  const listWrapRef = useRef<HTMLDivElement>(null)
+  const prevNewCountRef = useRef(0)
 
   useEffect(() => {
     world.syncLineage()
@@ -174,6 +203,7 @@ export default function GenealogyScreen({ world, frame, onBack, onCompare }: Pro
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
   const [flatView, setFlatView] = useState(true)
   const [hideDeadLeaves, setHideDeadLeaves] = useState(true)
+  const [showOnlySurvivors, setShowOnlySurvivors] = useState(false)
 
   const aliveCount = useMemo(
     () => world.plants.filter((p) => !p.dead).length,
@@ -243,16 +273,23 @@ export default function GenealogyScreen({ world, frame, onBack, onCompare }: Pro
       }
     }
     if (!hideDeadLeaves) return built
-    return built.filter(
+    let filtered = built.filter(
       ({ node }) =>
         !isExtinctWithoutLivingDescendants(node, seedCountByKey, hasLivingDescendants),
     )
+    if (showOnlySurvivors) {
+      filtered = filtered.filter(({ node }) =>
+        isSurvivor(node, seedCountByKey, hasLivingDescendants),
+      )
+    }
+    return filtered
   }, [
     nodes,
     roots,
     collapsed,
     flatView,
     hideDeadLeaves,
+    showOnlySurvivors,
     seedCountByKey,
     hasLivingDescendants,
     lineageRevision,
@@ -267,8 +304,44 @@ export default function GenealogyScreen({ world, frame, onBack, onCompare }: Pro
     const withChildren = nodes.filter(
       (n) => world.lineage.childrenOf(n.genomeKey).length > 0,
     ).length
-    return { genes: nodes.length, carriers, withSeeds, withChildren, totalLiving }
-  }, [nodes, seedCountByKey, world.lineage, lineageRevision])
+    const survivors = nodes.filter((n) =>
+      isSurvivor(n, seedCountByKey, hasLivingDescendants),
+    ).length
+    const newSinceEntry = nodes.filter((n) => n.firstTick >= entryTickRef.current).length
+    const recentBirths = nodes.filter(
+      (n) => world.tickCount - n.firstTick <= RECENT_TICK_WINDOW,
+    ).length
+    return {
+      genes: nodes.length,
+      carriers,
+      withSeeds,
+      withChildren,
+      totalLiving,
+      survivors,
+      newSinceEntry,
+      recentBirths,
+    }
+  }, [nodes, seedCountByKey, world.lineage, world.tickCount, hasLivingDescendants, lineageRevision])
+
+  const newGenomes = useMemo(
+    () =>
+      [...nodes]
+        .filter((n) => n.firstTick >= entryTickRef.current)
+        .sort((a, b) => b.firstTick - a.firstTick || a.genomeKey.localeCompare(b.genomeKey))
+        .slice(0, 12),
+    [nodes, lineageRevision, world.tickCount],
+  )
+
+  useEffect(() => {
+    if (newGenomes.length <= prevNewCountRef.current) {
+      prevNewCountRef.current = newGenomes.length
+      return
+    }
+    prevNewCountRef.current = newGenomes.length
+    const el = listWrapRef.current
+    if (!el) return
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+  }, [newGenomes.length])
 
   const roleLabel = (node: GenomeLineageNode): string => {
     if (node.livingCount > 0) return 'носитель'
@@ -317,7 +390,7 @@ export default function GenealogyScreen({ world, frame, onBack, onCompare }: Pro
           <span className="genome-explorer__title">Генеология генов</span>
         </div>
         <p className="genome-explorer__empty-msg">
-          Нет живых растений и семян — генеалогия показывает только активные геномы на поле.
+          Нет живых растений и семян — дождитесь рестарта или вернитесь в эволюцию.
         </p>
       </div>
     )
@@ -333,7 +406,7 @@ export default function GenealogyScreen({ world, frame, onBack, onCompare }: Pro
         <p className="genome-explorer__empty-msg">
           На поле {aliveCount} растений
           {pendingSeedCount > 0 ? ` и ${pendingSeedCount} семян` : ''}, но реестр генов пуст.
-          Вернитесь в эволюцию и откройте генеалогию снова.
+          Подождите несколько тиков — геномы появятся по мере эволюции.
         </p>
       </div>
     )
@@ -344,9 +417,21 @@ export default function GenealogyScreen({ world, frame, onBack, onCompare }: Pro
       <div className="genome-explorer__toolbar">
         <button type="button" onClick={onBack}>← Назад</button>
         <span className="genome-explorer__title">
-          Генеология · {stats.genes} генов · {stats.totalLiving} носителей
-          {stats.withChildren > 0 ? ` · ${stats.withChildren} с потомками` : ''}
+          Генеология · тик {world.tickCount} · {stats.genes} генов · {stats.survivors} выживших линий
         </span>
+        <span
+          className={`genealogy__live${paused ? ' genealogy__live--paused' : ''}`}
+          title={paused ? 'Симуляция на паузе' : 'Эволюция идёт'}
+        >
+          <span className="genealogy__live-dot" aria-hidden />
+          {paused ? 'пауза' : formatSpeed(speed)}
+        </span>
+        <button type="button" onClick={onPauseToggle}>
+          {paused ? '▶' : '⏸'}
+        </button>
+        <button type="button" onClick={onStep} title="Шаг (пробел)">
+          Шаг
+        </button>
         <button type="button" onClick={expandAll}>Развернуть</button>
         <button type="button" onClick={collapseAll}>Свернуть</button>
         <button
@@ -356,6 +441,14 @@ export default function GenealogyScreen({ world, frame, onBack, onCompare }: Pro
         >
           {flatView ? 'Дерево' : 'Список'}
         </button>
+        <label className="genealogy__filter" title="Только носители, семена и линии с живыми потомками">
+          <input
+            type="checkbox"
+            checked={showOnlySurvivors}
+            onChange={(e) => setShowOnlySurvivors(e.target.checked)}
+          />
+          Только выжившие
+        </label>
         <label className="genealogy__filter" title="Не показывать вымерших без живых потомков">
           <input
             type="checkbox"
@@ -372,8 +465,50 @@ export default function GenealogyScreen({ world, frame, onBack, onCompare }: Pro
         )}
       </div>
 
+      {(stats.newSinceEntry > 0 || !paused) && (
+        <div className="genealogy__evolution-strip">
+          <div className="genealogy__evolution-stats">
+            <span>{aliveCount} растений</span>
+            <span>{pendingSeedCount} семян</span>
+            <span>{stats.carriers} носителей</span>
+            <span className="genealogy__evolution-stats-new">
+              +{stats.newSinceEntry} новых генов
+              {stats.recentBirths > 0 ? ` (${stats.recentBirths} за ${RECENT_TICK_WINDOW} тиков)` : ''}
+            </span>
+          </div>
+          {newGenomes.length > 0 && (
+            <div className="genealogy__recent">
+              <span className="genealogy__recent-label">Новые геномы:</span>
+              <div className="genealogy__recent-chips">
+                {newGenomes.map((node) => {
+                  const { hue, sat, light } = genomeColor(node.genome)
+                  const isFresh = world.tickCount - node.firstTick <= RECENT_TICK_WINDOW
+                  return (
+                    <button
+                      key={node.genomeKey}
+                      type="button"
+                      className={`genealogy__recent-chip${isFresh ? ' genealogy__recent-chip--fresh' : ''}`}
+                      style={{ borderColor: `hsl(${hue}, ${sat}%, ${light}%)` }}
+                      title={`тик ${node.firstTick}${node.mutatedFromParent ? ', мутация' : ''}`}
+                      onClick={() => setSelectedKey(node.genomeKey)}
+                    >
+                      <span
+                        className="genealogy__recent-chip-swatch"
+                        style={{ background: `hsl(${hue}, ${sat}%, ${light}%)` }}
+                      />
+                      {shortGenomeKey(node.genomeKey)}
+                      {node.mutatedFromParent ? '*' : ''}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="genealogy__layout genealogy__layout--compact">
-        <div className="genealogy__list-wrap">
+        <div className="genealogy__list-wrap" ref={listWrapRef}>
           <div className="genealogy__list-head">
             <span />
             <span>Геном</span>
@@ -401,13 +536,15 @@ export default function GenealogyScreen({ world, frame, onBack, onCompare }: Pro
               const isActive = isCarrier || pendingSeeds > 0
               const isManual = node.manualSpawnCount > 0
               const isExtinct = !isActive && childCount === 0
+              const isNewSinceEntry = node.firstTick >= entryTickRef.current
+              const isRecentBirth = world.tickCount - node.firstTick <= RECENT_TICK_WINDOW
               const short = shortGenomeKey(node.genomeKey)
               const barColor = `hsl(${hue}, ${sat}%, ${light}%)`
 
               return (
                 <li
                   key={node.genomeKey}
-                  className={`genealogy__row${isManual ? ' genealogy__row--manual' : ''}${isSelected ? ' genealogy__row--selected' : ''}${isPick ? ' genealogy__row--pick' : ''}${isActive ? ' genealogy__row--carrier' : ''}${!isActive && childCount > 0 ? ' genealogy__row--ancestor' : ''}${isExtinct ? ' genealogy__row--extinct' : ''}`}
+                  className={`genealogy__row${isManual ? ' genealogy__row--manual' : ''}${isSelected ? ' genealogy__row--selected' : ''}${isPick ? ' genealogy__row--pick' : ''}${isActive ? ' genealogy__row--carrier' : ''}${!isActive && childCount > 0 ? ' genealogy__row--ancestor' : ''}${isExtinct ? ' genealogy__row--extinct' : ''}${isNewSinceEntry ? ' genealogy__row--new' : ''}${isRecentBirth ? ' genealogy__row--fresh' : ''}`}
                   style={{ paddingLeft: `${8 + depth * 16}px` }}
                   onClick={() => setSelectedKey(node.genomeKey)}
                 >
@@ -436,6 +573,7 @@ export default function GenealogyScreen({ world, frame, onBack, onCompare }: Pro
                   <code className="genealogy__row-key" title={node.genomeKey}>
                     {short}
                     {node.mutatedFromParent ? '*' : ''}
+                    {isNewSinceEntry ? ' новый' : ''}
                     {childCount > 0 ? ` →${childCount}` : ''}
                   </code>
                   <span className="genealogy__row-bytes">{node.genome.code.length}</span>

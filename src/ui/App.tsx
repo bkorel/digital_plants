@@ -27,8 +27,14 @@ const COLLECTION_KEY = 'digital-plants-collection'
 
 const FULLSCREEN_MODES: AppMode[] = ['GENOME_EXPLORER', 'GENOME_COMPARE', 'GENEALOGY']
 
+const SIMULATION_BLOCKED_MODES: AppMode[] = ['GENOME_EXPLORER', 'GENOME_COMPARE']
+
 function isFullscreenMode(mode: AppMode): boolean {
   return FULLSCREEN_MODES.includes(mode)
+}
+
+function isSimulationBlocked(mode: AppMode): boolean {
+  return SIMULATION_BLOCKED_MODES.includes(mode)
 }
 
 function resolveGenomeByKey(
@@ -272,7 +278,7 @@ export default function App() {
       const host = workerHostRef.current
       const useWorker = useWorkerSimRef.current && host != null
 
-      if (w && !paused && !isFullscreenMode(appMode)) {
+      if (w && !paused && !isSimulationBlocked(appMode)) {
         const traceId =
           viewMode === 'TRACE' && selectedPlantId != null ? selectedPlantId : null
 
@@ -479,7 +485,6 @@ export default function App() {
       setExplorerReturnMode(appMode === 'LABORATORY' ? 'LABORATORY' : 'EVOLUTION')
     }
     setAppMode('GENEALOGY')
-    setPaused(true)
     refresh()
   }
 
@@ -784,12 +789,30 @@ export default function App() {
           </div>
         )
       ) : appMode === 'GENEALOGY' ? (
-        <GenealogyScreen
-          world={world}
-          frame={renderTick}
-          onBack={handleExitFullscreenMode}
-          onCompare={handleEnterGenomeCompareKeys}
-        />
+        <div className="genealogy-shell">
+          <GenealogyScreen
+            world={world}
+            frame={renderTick}
+            paused={paused}
+            speed={speed}
+            onPauseToggle={() => setPaused((p) => !p)}
+            onStep={handleStep}
+            onBack={handleExitFullscreenMode}
+            onCompare={handleEnterGenomeCompareKeys}
+          />
+          <SimulationBar
+            paused={paused}
+            speed={speed}
+            appMode="EVOLUTION"
+            autoRandomRestartOnExtinction={autoRandomRestartOnExtinction}
+            onPauseToggle={() => setPaused((p) => !p)}
+            onStep={handleStep}
+            onRestart={handleRestart}
+            onRandomRestart={handleRandomRestart}
+            onAutoRandomRestartChange={setAutoRandomRestartOnExtinction}
+            onSpeedChange={setSpeed}
+          />
+        </div>
       ) : (
         <>
       <div className="world-column">
