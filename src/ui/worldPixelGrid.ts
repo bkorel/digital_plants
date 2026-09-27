@@ -110,6 +110,92 @@ function idxAt(x: number, y: number): number {
   return y * simWorld.W + x
 }
 
+/** Сдвиг hue к target не дальше maxStep градусов (вид остаётся узнаваемым). */
+function nudgeHue(hue: number, target: number, maxStep: number): number {
+  const delta = ((target - hue + 540) % 360) - 180
+  const step = Math.max(-maxStep, Math.min(maxStep, delta))
+  return (hue + step + 360) % 360
+}
+
+function mixToward(
+  pixel: number,
+  tr: number,
+  tg: number,
+  tb: number,
+  amount: number,
+): number {
+  const keep = 1 - amount
+  const r = (pixel & 255) * keep + tr * amount
+  const g = ((pixel >>> 8) & 255) * keep + tg * amount
+  const b = ((pixel >>> 16) & 255) * keep + tb * amount
+  const a = (pixel >>> 24) & 255
+  return packPixel(Math.round(r), Math.round(g), Math.round(b), a)
+}
+
+/**
+ * Свет колонки уже посчитан (0 в глухой тени, ~1 на открытой вершине).
+ * Пол как у неба: при нуле клетка не пропадает, но тень полога явно темнее.
+ */
+function multiplyRgbByColumnLight(pixel: number, columnLight: number): number {
+  const factor = 0.18 + 0.82 * Math.min(1, Math.max(0, columnLight))
+  const r = Math.round((pixel & 255) * factor)
+  const g = Math.round(((pixel >>> 8) & 255) * factor)
+  const b = Math.round(((pixel >>> 16) & 255) * factor)
+  const a = (pixel >>> 24) & 255
+  return packPixel(r, g, b, a)
+}
+
+/** Ткань внутри hue вида: корень темнее и теплее, меристема светлее, шип к пурпуру, ствол приглушён. */
+function plantsTissuePixel(
+  type: CellType,
+  color: { hue: number; sat: number; light: number },
+  drawState: 'normal' | 'dimmed' | 'selected',
+): number {
+  let hue = color.hue
+  let sat = color.sat
+  let light = color.light
+  let warmMix = 0
+  let purpleMix = 0
+
+  switch (type) {
+    case 'ROOT':
+      hue = nudgeHue(hue, 28, 24)
+      sat = Math.min(92, sat + 6)
+      light *= 0.55
+      warmMix = 0.28
+      break
+    case 'STEM':
+      sat *= 0.42
+      light *= 0.78
+      break
+    case 'SPROUT':
+      sat = Math.min(94, sat + 8)
+      light = Math.min(76, light * 1.4)
+      break
+    case 'SPIKE':
+      hue = nudgeHue(hue, 292, 32)
+      sat = Math.min(92, sat + 8)
+      light = Math.min(68, light * 1.05)
+      purpleMix = 0.46
+      break
+    default:
+      break
+  }
+
+  if (drawState === 'selected') {
+    sat = Math.min(100, sat + 14)
+    light = Math.min(84, light + 8)
+  } else if (drawState === 'dimmed') {
+    sat *= 0.4
+    light *= 0.38
+  }
+
+  let pixel = hslPixel(hue, Math.max(0, sat), Math.max(0, Math.min(100, light)))
+  if (warmMix > 0) pixel = mixToward(pixel, 176, 78, 32, warmMix)
+  if (purpleMix > 0) pixel = mixToward(pixel, 206, 42, 236, purpleMix)
+  return pixel
+}
+
 /** Яркий цвет семени (клетка на растении, в почве, падение). */
 export function seedPixel(viewMode: ViewMode, dimmed = false, selected = false): number {
   if (viewMode === 'ANATOMY' || viewMode === 'TRACE') {
@@ -134,6 +220,7 @@ export function fillPlantPixels(
   plant: Plant,
   viewMode: ViewMode,
   drawState: 'normal' | 'dimmed' | 'selected',
+  columnLight?: Float32Array,
 ): void {
   const color = genomeColor(plant.genome)
   const dimmed = drawState === 'dimmed'
@@ -142,15 +229,19 @@ export function fillPlantPixels(
   for (const cell of plant.cells) {
     const idx = idxAt(cell.x, cell.y)
     if (cell.type === 'SEED') {
-      pixels[idx] = seedPixel(viewMode, dimmed, selected)
+      let pixel = seedPixel(viewMode, dimmed, selected)
+      if (viewMode === 'PLANTS' && columnLight) {
+        pixel = multiplyRgbByColumnLight(pixel, columnLight[idx] ?? 0)
+      }
+      pixels[idx] = pixel
       continue
     }
     if (viewMode === 'ANATOMY' || viewMode === 'TRACE') {
       pixels[idx] = anatomyPixel(anatomyTissueType(cell), dimmed, selected)
     } else if (viewMode === 'PLANTS') {
-      const sat = selected ? color.sat + 25 : dimmed ? 18 : color.sat
-      const light = selected ? color.light + 12 : dimmed ? color.light * 0.35 : color.light
-      pixels[idx] = hslPixel(color.hue, sat, Math.min(85, light))
+      let pixel = plantsTissuePixel(anatomyTissueType(cell), color, drawState)
+      if (columnLight) pixel = multiplyRgbByColumnLight(pixel, columnLight[idx] ?? 0)
+      pixels[idx] = pixel
     } else if (viewMode === 'ENERGY') {
       const t = Math.min(1, cell.cellEnergy / CAP[cell.type])
       const hueE = 45 - t * 45
@@ -218,13 +309,25 @@ export function buildPlantsPixelLayerInto(
   for (const plant of alive) {
     if (showTrace && plant.id === selectedPlantId) continue
     if (hasSelection && plant.id === selectedPlantId) continue
-    fillPlantPixels(pixels, plant, viewMode, hasSelection || showTrace ? 'dimmed' : 'normal')
+    fillPlantPixels(
+      pixels,
+      plant,
+      viewMode,
+      hasSelection || showTrace ? 'dimmed' : 'normal',
+      viewMode === 'PLANTS' ? world.light : undefined,
+    )
   }
 
   if (showTrace || hasSelection) {
     const selected = alive.find((p) => p.id === selectedPlantId)
     if (selected) {
-      fillPlantPixels(pixels, selected, viewMode, 'selected')
+      fillPlantPixels(
+        pixels,
+        selected,
+        viewMode,
+        'selected',
+        viewMode === 'PLANTS' ? world.light : undefined,
+      )
     }
   }
 }

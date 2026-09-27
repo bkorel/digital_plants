@@ -475,7 +475,7 @@ textarea {
   top: 10px;
   left: 10px;
   z-index: 2;
-  max-width: 240px;
+  max-width: 320px;
   padding: 10px 12px;
   background: rgba(10, 16, 10, 0.92);
   border: 1px solid #3a5a38;
@@ -488,9 +488,16 @@ textarea {
   font-size: 0.82rem;
   font-weight: 600;
   color: #b8e0b0;
-  margin-bottom: 8px;
+  margin-bottom: 4px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+.plant-inspect__strategy {
+  margin: 0 0 8px;
+  font-size: 0.74rem;
+  line-height: 1.35;
+  color: #e4d4f8;
 }
 
 .plant-inspect__grid {
