@@ -40,7 +40,7 @@ export default function TracePanel({ plantId, tick, events }: Props) {
         </ul>
       )}
       <div className="trace-legend">
-        {(['GROW', 'BRANCH', 'ROOT', 'STEM', 'SEED', 'SEED_DROP', 'SPIKE', 'SHOOT', 'GERMINATE', 'DEATH'] as const).map((k) => (
+        {(['GROW', 'BRANCH', 'ROOT', 'STEM', 'SEED', 'SEED_DROP', 'SPIKE', 'SHOOT', 'SPIKE_KILL', 'GERMINATE', 'DEATH'] as const).map((k) => (
           <span key={k} className="trace-legend-item">
             <span className="trace-dot" style={{ background: EVENT_COLORS[k] }} />
             {EVENT_LABELS[k]}

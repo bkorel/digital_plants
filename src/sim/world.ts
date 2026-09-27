@@ -1,4 +1,4 @@
-import { GERMINATION_CHANCE, GERMINATION_NEIGHBOR_BLOCK, INITIAL_PLANTS, LAB_MIN_PLANT_SPACING, MAX_GERMINATIONS_PER_TICK, MIN_PLANT_SPACING, MIN_SEED_ENERGY, MINERAL_ENERGY_FACTOR, SEED_FALL_DURATION_MS, SEED_FALL_DURATION_TICKS, SEED_GERMINATION_TICKS, SEED_MIN_PAYLOAD, SEED_SCATTER, SEED_SOIL_UPKEEP, SHOOT_VISUAL_TTL, type WorldBounds } from './config'
+import { GERMINATION_CHANCE, GERMINATION_NEIGHBOR_BLOCK, INITIAL_PLANTS, LAB_MIN_PLANT_SPACING, MAX_GERMINATIONS_PER_TICK, MIN_PLANT_SPACING, MIN_SEED_ENERGY, MINERAL_ENERGY_FACTOR, SEED_FALL_DURATION_MS, SEED_FALL_DURATION_TICKS, SEED_GERMINATION_TICKS, SEED_MIN_PAYLOAD, SEED_SCATTER, SEED_SOIL_UPKEEP, SHOOT_VISUAL_TTL, SPIKE_KILL_FLASH_TTL, type WorldBounds } from './config'
 import type { GenomeExecutionRecorder } from './genomeExecution'
 import { simWorld } from './worldBounds'
 import { offsetX, wrapX, xDistance } from './coords'
@@ -35,7 +35,13 @@ import type { AppMode, EvolutionSnapshot, FallingSeed, Genome, Plant, SeedInSoil
 import { estimateSpecies } from './genome'
 import { LineageRegistry } from './lineage'
 import { SEED_OCC, isCellFree } from './occupancy'
-import { emitPlantEvent, setPlantEventSink, type PlantTickEvent, type ShootVisual } from './plantEvents'
+import {
+  emitPlantEvent,
+  setPlantEventSink,
+  type PlantTickEvent,
+  type ShootVisual,
+  type SpikeKillVisual,
+} from './plantEvents'
 
 function clonePlant(plant: Plant): Plant {
   return {
@@ -78,6 +84,8 @@ export class World {
   tickEvents: PlantTickEvent[] = []
   /** Недавние выстрелы шипов — для красных линий в режимах «Растения» / «Ткани» */
   recentShoots: ShootVisual[] = []
+  /** Вспышки ростков, убитых аурой шипа */
+  recentSpikeKills: SpikeKillVisual[] = []
   /** Колбэк для лаборатории конструктора: исход семени */
   seedOutcomeListener: ((outcome: 'germinated' | 'decayed', seed: SeedInSoil) => void) | null = null
   /** Запись исполнения генома в конструкторе */
@@ -415,8 +423,12 @@ export class World {
 
   private pruneRecentShoots(): void {
     const now = this.tickCount
-    if (this.recentShoots.length === 0) return
-    this.recentShoots = this.recentShoots.filter((s) => s.expireTick > now)
+    if (this.recentShoots.length > 0) {
+      this.recentShoots = this.recentShoots.filter((s) => s.expireTick > now)
+    }
+    if (this.recentSpikeKills.length > 0) {
+      this.recentSpikeKills = this.recentSpikeKills.filter((s) => s.expireTick > now)
+    }
   }
 
   tick(): void {
@@ -432,6 +444,13 @@ export class World {
           x: e.x,
           y: e.y,
           expireTick: this.tickCount + SHOOT_VISUAL_TTL,
+        })
+      }
+      if (e.kind === 'SPIKE_KILL') {
+        this.recentSpikeKills.push({
+          x: e.x,
+          y: e.y,
+          expireTick: this.tickCount + SPIKE_KILL_FLASH_TTL,
         })
       }
       if (traceId != null && e.plantId === traceId) {
@@ -679,6 +698,7 @@ export class World {
     setIdCounters(snapshot.nextPlantId, snapshot.nextCellId)
     this.selectedPlantId = snapshot.selectedPlantId
     this.recentShoots = []
+    this.recentSpikeKills = []
     this.tickEvents = []
     this.lineage.restore(snapshot.lineage)
     this.syncLineage()
@@ -698,6 +718,7 @@ export class World {
     this.fallingSeeds = []
     this.selectedPlantId = null
     this.recentShoots = []
+    this.recentSpikeKills = []
     this.minerals = initMinerals()
     this.occupancy = Array.from({ length: simWorld.H }, () => new Int32Array(simWorld.W))
     resetIdCounters()
@@ -720,6 +741,7 @@ export class World {
     this.fallingSeeds = []
     this.selectedPlantId = null
     this.recentShoots = []
+    this.recentSpikeKills = []
     this.minerals = initMinerals()
     this.occupancy = Array.from({ length: simWorld.H }, () => new Int32Array(simWorld.W))
     resetIdCounters()
@@ -745,6 +767,7 @@ export class World {
     this.fallingSeeds = []
     this.selectedPlantId = null
     this.recentShoots = []
+    this.recentSpikeKills = []
     this.minerals = initMinerals()
     this.occupancy = Array.from({ length: simWorld.H }, () => new Int32Array(simWorld.W))
     resetIdCounters()
@@ -770,6 +793,7 @@ export class World {
     this.fallingSeeds = []
     this.selectedPlantId = null
     this.recentShoots = []
+    this.recentSpikeKills = []
     this.minerals = initMinerals()
     this.occupancy = Array.from({ length: simWorld.H }, () => new Int32Array(simWorld.W))
     resetIdCounters()

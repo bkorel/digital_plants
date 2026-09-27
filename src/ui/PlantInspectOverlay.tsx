@@ -1,5 +1,6 @@
 import { computePlantInspectStats } from '../sim/plant'
 import type { Plant } from '../sim/types'
+import { formatPlantStrategy } from './plantStrategy'
 
 interface Props {
   plant: Plant
@@ -25,6 +26,7 @@ export default function PlantInspectOverlay({
   return (
     <div className="plant-inspect">
       <div className="plant-inspect__title">Растение #{plant.id}</div>
+      <p className="plant-inspect__strategy">{formatPlantStrategy(plant.genome)}</p>
       <dl className="plant-inspect__grid">
         <dt>Высота</dt>
         <dd>{s.height} кл.</dd>

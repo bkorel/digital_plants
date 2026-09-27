@@ -8,6 +8,7 @@ export type PlantEventKind =
   | 'SEED_DROP'
   | 'SPIKE'
   | 'SHOOT'
+  | 'SPIKE_KILL'
   | 'GERMINATE'
   | 'DEATH'
 
@@ -30,6 +31,13 @@ export interface ShootVisual {
   expireTick: number
 }
 
+/** Короткая вспышка на клетке, где аура шипа убила чужой росток. */
+export interface SpikeKillVisual {
+  x: number
+  y: number
+  expireTick: number
+}
+
 export const EVENT_LABELS: Record<PlantEventKind, string> = {
   GROW: 'рост',
   BRANCH: 'ветка',
@@ -39,6 +47,7 @@ export const EVENT_LABELS: Record<PlantEventKind, string> = {
   SEED_DROP: 'сброс',
   SPIKE: 'шип',
   SHOOT: 'выстрел',
+  SPIKE_KILL: 'удар шипа',
   GERMINATE: 'пророст',
   DEATH: 'гибель',
 }
@@ -52,6 +61,7 @@ export const EVENT_COLORS: Record<PlantEventKind, string> = {
   SEED_DROP: '#b0bec5',
   SPIKE: '#e040fb',
   SHOOT: '#ff3333',
+  SPIKE_KILL: '#ff4dff',
   GERMINATE: '#80cbc4',
   DEATH: '#ff5252',
 }

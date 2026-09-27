@@ -328,7 +328,8 @@ export function applyWorldFoliageRules(
     if (!plant.dead) plantById.set(plant.id, plant)
   }
   applyShadedSproutSenescence(plants, occupancy, deposits)
-  for (const key of resolveSpikeAura(plants)) toKill.add(key)
+  const spikeKilled = resolveSpikeAura(plants)
+  for (const key of spikeKilled) toKill.add(key)
   for (const key of resolveLeafContacts(plants, occupancy, plantById)) toKill.add(key)
   for (const key of resolveRootContacts(plants, occupancy, plantById)) toKill.add(key)
 
@@ -340,6 +341,9 @@ export function applyWorldFoliageRules(
     if (!plant) continue
     const cell = plant.cells.find((c) => c.id === cellId)
     if (!cell) continue
+    if (spikeKilled.has(key)) {
+      emitPlantEvent({ plantId: plant.id, kind: 'SPIKE_KILL', x: cell.x, y: cell.y })
+    }
     if (isAir(cell.y)) {
       removeAirCell(plant, cell, occupancy, deposits)
     } else if (isRootTissue(cell)) {

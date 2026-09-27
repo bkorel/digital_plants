@@ -118,8 +118,10 @@ export const SHOOT_RANGE_MIN = 3
 export const SHOOT_RANGE_MAX = 50
 /** Чужой STEM в воздухе уничтожается выстрелом при энергии ≤ этого порога */
 export const SHOOT_STEM_KILL_MAX_ENERGY = 4.0
-/** Радиус от шипа, в котором гибнут чужие побеги (SPROUT, манхэттен); не рисуется на экране */
+/** Радиус от шипа, в котором гибнут чужие побеги (SPROUT, манхэттен). Рисуется в режимах «Растения» и «Ткани». */
 export const SPIKE_LEAF_KILL_RADIUS = 2
+/** Сколько тиков вспышка ростка, убитого аурой шипа, остаётся на экране */
+export const SPIKE_KILL_FLASH_TTL = 20
 /** @deprecated больше не используется — расчистка только колонки посадки */
 export const PLANT_CLEAR_RADIUS = 2
 

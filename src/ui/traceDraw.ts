@@ -1,5 +1,7 @@
-import { EVENT_COLORS, EVENT_LABELS, type PlantTickEvent, type ShootVisual } from '../sim/plantEvents'
-import { SHOOT_VISUAL_TTL } from '../sim/config'
+import { EVENT_COLORS, EVENT_LABELS, type PlantTickEvent, type ShootVisual, type SpikeKillVisual } from '../sim/plantEvents'
+import { SHOOT_VISUAL_TTL, SPIKE_KILL_FLASH_TTL, SPIKE_LEAF_KILL_RADIUS, WORLD } from '../sim/config'
+import { wrapX } from '../sim/coords'
+import type { Plant } from '../sim/types'
 
 interface LabelRect {
   x: number
@@ -147,6 +149,115 @@ export function drawShootLines(
     const tx = line.x * cellSize + cellSize / 2
     const ty = line.y * cellSize + cellSize / 2
     drawArrow(ctx, fx, fy, tx, ty, SHOOT_LINE_COLOR, cellSize, width, alpha)
+  }
+}
+
+interface AuraCell {
+  edge: boolean
+  bright: boolean
+}
+
+/** Пассивная аура шипа: манхэттен SPIKE_LEAF_KILL_RADIUS, только воздух. */
+export function drawSpikeAuras(
+  ctx: CanvasRenderingContext2D,
+  plants: Plant[],
+  cellSize: number,
+  selectedPlantId: number | null,
+): void {
+  const radius = SPIKE_LEAF_KILL_RADIUS
+  const cells = new Map<number, AuraCell>()
+
+  for (const plant of plants) {
+    if (plant.dead) continue
+    const bright = selectedPlantId == null || plant.id === selectedPlantId
+    for (const cell of plant.cells) {
+      if (cell.type !== 'SPIKE' || cell.y >= WORLD.SOIL_Y) continue
+      for (let dy = -radius; dy <= radius; dy++) {
+        const y = cell.y + dy
+        if (y < 0 || y >= WORLD.SOIL_Y) continue
+        const span = radius - Math.abs(dy)
+        for (let dx = -span; dx <= span; dx++) {
+          if (dx === 0 && dy === 0) continue
+          const x = wrapX(cell.x + dx)
+          const key = y * WORLD.W + x
+          const edge = Math.abs(dx) + Math.abs(dy) === radius
+          const prev = cells.get(key)
+          if (!prev) {
+            cells.set(key, { edge, bright })
+          } else {
+            prev.bright = prev.bright || bright
+            prev.edge = prev.edge && edge
+          }
+        }
+      }
+    }
+  }
+
+  for (const [key, cell] of cells) {
+    const x = key % WORLD.W
+    const y = (key - x) / WORLD.W
+    const px = x * cellSize
+    const py = y * cellSize
+    const fillAlpha = cell.bright ? (cell.edge ? 0.42 : 0.3) : cell.edge ? 0.16 : 0.1
+    ctx.fillStyle = cell.edge
+      ? `rgba(255, 186, 255, ${fillAlpha})`
+      : `rgba(176, 64, 220, ${fillAlpha})`
+    ctx.fillRect(px, py, cellSize, cellSize)
+  }
+}
+
+/** Короткий контур ауры поверх растений, чтобы радиус читался и на кроне. */
+export function drawSpikeAuraEdges(
+  ctx: CanvasRenderingContext2D,
+  plants: Plant[],
+  cellSize: number,
+  selectedPlantId: number | null,
+): void {
+  const radius = SPIKE_LEAF_KILL_RADIUS
+  ctx.lineWidth = Math.max(1, cellSize * 0.22)
+
+  for (const plant of plants) {
+    if (plant.dead) continue
+    const dimmed = selectedPlantId != null && plant.id !== selectedPlantId
+    ctx.strokeStyle = dimmed ? 'rgba(220, 150, 245, 0.35)' : 'rgba(255, 210, 255, 0.92)'
+    for (const cell of plant.cells) {
+      if (cell.type !== 'SPIKE' || cell.y >= WORLD.SOIL_Y) continue
+      for (let dy = -radius; dy <= radius; dy++) {
+        const y = cell.y + dy
+        if (y < 0 || y >= WORLD.SOIL_Y) continue
+        const span = radius - Math.abs(dy)
+        for (let dx = -span; dx <= span; dx++) {
+          if (Math.abs(dx) + Math.abs(dy) !== radius) continue
+          const x = wrapX(cell.x + dx)
+          const px = x * cellSize
+          const py = y * cellSize
+          ctx.strokeRect(px + 0.5, py + 0.5, Math.max(0.5, cellSize - 1), Math.max(0.5, cellSize - 1))
+        }
+      }
+    }
+  }
+}
+
+/** Вспышка на месте ростка, убитого аурой шипа. */
+export function drawSpikeKillFlashes(
+  ctx: CanvasRenderingContext2D,
+  flashes: SpikeKillVisual[],
+  cellSize: number,
+  tickCount: number,
+): void {
+  for (const flash of flashes) {
+    const life = flash.expireTick - tickCount
+    if (life <= 0) continue
+    const t = Math.min(1, life / SPIKE_KILL_FLASH_TTL)
+    const alpha = 0.4 + 0.6 * t
+    const grow = (1 - t) * cellSize * 0.45
+    const px = flash.x * cellSize
+    const py = flash.y * cellSize
+    ctx.fillStyle = `rgba(255, 244, 255, ${alpha})`
+    ctx.fillRect(px - grow, py - grow, cellSize + grow * 2, cellSize + grow * 2)
+    ctx.strokeStyle = `rgba(255, 60, 220, ${alpha})`
+    ctx.lineWidth = Math.max(1.5, cellSize * 0.4)
+    ctx.strokeRect(px + 0.5, py + 0.5, Math.max(0.5, cellSize - 1), Math.max(0.5, cellSize - 1))
   }
 }
 

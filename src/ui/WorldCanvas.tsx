@@ -5,7 +5,13 @@ import { wrapX } from '../sim/coords'
 import type { AppMode, CellType } from '../sim/types'
 import type { ViewMode } from '../sim/types'
 import type { World } from '../sim/world'
-import { drawPlantTraceEvents, drawShootLines } from './traceDraw'
+import {
+  drawPlantTraceEvents,
+  drawShootLines,
+  drawSpikeAuraEdges,
+  drawSpikeAuras,
+  drawSpikeKillFlashes,
+} from './traceDraw'
 import PlantInspectOverlay from './PlantInspectOverlay'
 import {
   blitPixelGrid,
@@ -236,6 +242,11 @@ export default function WorldCanvas({
       ctx.fillRect(0, 0, w, h)
     }
 
+    const showSpikeAura = viewMode === 'PLANTS' || viewMode === 'ANATOMY'
+    if (showSpikeAura) {
+      drawSpikeAuras(ctx, world.plants, cellSize, selectedPlantId)
+    }
+
     let plantsCanvas = plantsGridRef.current
     if (!plantsCanvas) {
       plantsCanvas = document.createElement('canvas')
@@ -304,6 +315,8 @@ export default function WorldCanvas({
     }
 
     if (viewMode === 'PLANTS' || viewMode === 'ANATOMY') {
+      drawSpikeAuraEdges(ctx, world.plants, cellSize, selectedPlantId)
+      drawSpikeKillFlashes(ctx, world.recentSpikeKills, cellSize, world.tickCount)
       drawShootLines(ctx, world.recentShoots, cellSize, world.tickCount, selectedPlantId)
     }
 
